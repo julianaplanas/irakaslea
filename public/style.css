@@ -154,3 +154,12 @@ textarea { min-height: 120px; resize: vertical; }
   .teacher .avatar { width: 96px; height: 96px; }
   .match { grid-template-columns: 1fr 1fr; }
 }
+
+.fbbar { display: flex; gap: 6px; align-items: center; margin-top: 10px; padding: 6px 4px; }
+.fbbtn { background: transparent; color: var(--ink); padding: .3em .5em; font-size: 1.2rem; }
+.stars { display: flex; gap: 2px; margin: 8px 0; }
+.stars .fbbtn { font-size: 1.7rem; color: var(--gold); }
+table.rep { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: .92rem; }
+table.rep td, table.rep th { padding: 6px 4px; border-bottom: 1px solid var(--line); text-align: left; }
+table.rep th { color: var(--muted); }
+table.rep tr.skipped td { color: var(--muted); }

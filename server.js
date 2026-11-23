@@ -25,6 +25,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS homework (lesson_id TEXT PRIMARY KEY, brief TEXT NOT NULL, answer TEXT, correction TEXT, submitted_at TEXT, corrected_at TEXT);
   CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY AUTOINCREMENT, lesson_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT, note TEXT);
   CREATE TABLE IF NOT EXISTS video_search (lesson_id TEXT PRIMARY KEY, searched_at TEXT NOT NULL DEFAULT (datetime('now')), excluded TEXT NOT NULL DEFAULT '[]');
+  CREATE TABLE IF NOT EXISTS activity_log (id INTEGER PRIMARY KEY AUTOINCREMENT, lesson_id TEXT NOT NULL, activity_id TEXT NOT NULL, type TEXT NOT NULL, block TEXT, seconds INTEGER NOT NULL, skipped INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')));
+  CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, lesson_id TEXT NOT NULL, activity_id TEXT NOT NULL, type TEXT, rating INTEGER, comment TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
   CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY CHECK (id = 1), text TEXT NOT NULL DEFAULT '', updated_at TEXT);
   CREATE TABLE IF NOT EXISTS writings (id INTEGER PRIMARY KEY AUTOINCREMENT, lesson_id TEXT, prompt TEXT, text TEXT, correction TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
 `);
@@ -138,6 +140,34 @@ app.post("/api/class/:id/finish", async (req, res) => {
     db.prepare("UPDATE notes SET text = ?, updated_at = datetime('now') WHERE id = 1").run(text);
   } catch (e) { console.error("Ficha:", e.message); }
 });
+
+// ---------- métricas y feedback para mejorar las clases ----------
+app.post("/api/class/:id/log", (req, res) => {
+  const { activityId, type, block, seconds, skipped } = req.body || {};
+  const sec = Math.max(0, Math.min(3600, Math.round(Number(seconds) || 0)));
+  if (sec >= 2) db.prepare("INSERT INTO activity_log (lesson_id, activity_id, type, block, seconds, skipped) VALUES (?, ?, ?, ?, ?, ?)").run(req.params.id, String(activityId), String(type), String(block || ""), sec, skipped ? 1 : 0);
+  res.json({ ok: true });
+});
+app.post("/api/class/:id/feedback", (req, res) => {
+  const { activityId, type, rating, comment } = req.body || {};
+  db.prepare("INSERT INTO feedback (lesson_id, activity_id, type, rating, comment) VALUES (?, ?, ?, ?, ?)").run(req.params.id, String(activityId || "class"), type ? String(type) : null, rating == null ? null : Number(rating), comment ? String(comment).slice(0, 2000) : null);
+  res.json({ ok: true });
+});
+function report() {
+  return db.prepare("SELECT * FROM classes WHERE started_at IS NOT NULL ORDER BY started_at").all().map(c => {
+    const l = C.byId[c.lesson_id] || {};
+    const logs = db.prepare("SELECT activity_id, type, block, SUM(seconds) seconds, MAX(skipped) skipped, MIN(skipped) completed_once FROM activity_log WHERE lesson_id = ? GROUP BY activity_id ORDER BY MIN(id)").all(c.lesson_id);
+    const results = db.prepare("SELECT activity_id, ok, total FROM results WHERE lesson_id = ? ORDER BY id").all(c.lesson_id);
+    const fb = db.prepare("SELECT activity_id, type, rating, comment, created_at FROM feedback WHERE lesson_id = ? ORDER BY id").all(c.lesson_id);
+    const res = Object.fromEntries(results.map(r => [r.activity_id, r]));
+    return {
+      lesson: c.lesson_id, eu: l.eu, title: l.title, started: c.started_at, finished: c.finished_at, minutes: c.minutes,
+      activities: logs.map(a => ({ id: a.activity_id, type: a.type, block: a.block, seconds: a.seconds, skipped: a.completed_once === 1, score: res[a.activity_id] ? `${res[a.activity_id].ok}/${res[a.activity_id].total}` : null })),
+      feedback: fb,
+    };
+  });
+}
+app.get("/api/report", (req, res) => res.json(report()));
 
 // ---------- conversación con Irati (role-play) ----------
 app.post("/api/chat", async (req, res) => {

@@ -92,11 +92,11 @@
         h("button", { onclick: () => startClass(next.id) }, "Hasi klasea →")));
     const warn = [];
     if (!st.claude) warn.push(h("div", { class: "card small" }, "⚠️ Falta OPENROUTER_API_KEY: las conversaciones, la corrección y los extras de cada clase no funcionarán."));
-    const tabs = h("div", { class: "tabs" }, ...[["klaseak", "Klaseak"], ["lanak", "Etxeko lanak"], ["fitxa", "Fitxa"]].map(([k, label]) =>
+    const tabs = h("div", { class: "tabs" }, ...[["klaseak", "Klaseak"], ["lanak", "Etxeko lanak"], ["fitxa", "Fitxa"], ["datuak", "Datuak"]].map(([k, label]) =>
       h("button", { class: S.tab === k ? "on" : "", onclick: () => { S.tab = k; renderHome(); } }, label)));
     const body = h("div");
     $app.replaceChildren(h("div", { class: "wrap" }, h("h1", { style: "margin-top:6px" }, "Irakaslea"), ...warn, hero, tabs, body));
-    ({ klaseak: tabClasses, lanak: tabHomework, bideoak: tabVideos, fitxa: tabNotes })[S.tab](body);
+    ({ klaseak: tabClasses, lanak: tabHomework, fitxa: tabNotes, datuak: tabReport })[S.tab](body);
   }
 
   function tabClasses(body) {
@@ -152,6 +152,34 @@
       h("button", { class: "ghost", onclick: async () => { await api(`/api/videos/${v.id}`, { method: "DELETE" }); renderHome(); } }, "Kendu")));
   }
 
+  const TYPE_ES = { roleplay: "Conversación", feedback: "Corrección de deberes", memory: "Parejas", scene: "Escena", slides: "Explicación", cards: "Tarjetas", video: "Vídeo", mcq: "Test", match: "Unir", order: "Ordenar", gap: "Huecos", transform: "Transformar", dictation: "Dictado", culture: "Cultura", write: "Escritura", repeat: "Pronunciación", speed: "Ronda rápida", summary: "Resumen", homework: "Deberes" };
+  const mmss = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+  function reportMarkdown(rep) {
+    return rep.map(c => [
+      `## ${c.lesson} ${c.eu} — ${c.title}`,
+      `Empezada ${c.started} · terminada ${c.finished || "no"} · ${c.minutes != null ? c.minutes + " min" : "-"}`,
+      "", "| Actividad | Bloque | Tiempo | Resultado | Saltada |", "| --- | --- | --- | --- | --- |",
+      ...c.activities.map(a => `| ${TYPE_ES[a.type] || a.type} | ${a.block} | ${mmss(a.seconds)} | ${a.score || "-"} | ${a.skipped ? "sí" : ""} |`),
+      c.feedback.length ? "\nFeedback:\n" + c.feedback.map(f => `- ${f.activity_id === "class" ? "CLASE" : (TYPE_ES[f.type] || f.type) + " (" + f.activity_id + ")"}: ${f.rating != null ? (f.activity_id === "class" ? f.rating + "/5" : f.rating > 0 ? "👍" : f.rating < 0 ? "👎" : "💬") : ""} ${f.comment || ""}`).join("\n") : "",
+    ].join("\n")).join("\n\n");
+  }
+  async function tabReport(body) {
+    const rep = await api("/api/report");
+    if (!rep.length) return body.append(h("div", { class: "card muted" }, "Aún no hay datos. Aparecen al hacer una clase."));
+    const msg = h("span", { class: "muted small" });
+    body.append(h("div", { class: "card row" }, h("span", { class: "grow small" }, "Copia esto y pégaselo a Claude para mejorar las clases."),
+      h("button", { onclick: async () => { try { await navigator.clipboard.writeText(reportMarkdown(rep)); msg.textContent = "Copiado ✓"; } catch (e) { msg.textContent = "No se pudo copiar"; } } }, "Copiar"), msg));
+    for (const c of rep.slice().reverse()) {
+      const total = c.activities.reduce((a, x) => a + x.seconds, 0);
+      body.append(h("div", { class: "card" },
+        h("b", {}, `${c.eu} — ${c.title}`),
+        h("div", { class: "muted small" }, `${c.finished ? "Terminada" : "Sin terminar"} · ${mmss(total)} en actividades`),
+        h("table", { class: "rep" }, h("tr", {}, h("th", {}, "Actividad"), h("th", {}, "Tiempo"), h("th", {}, "Resultado")),
+          ...c.activities.map(a => h("tr", { class: a.skipped ? "skipped" : "" }, h("td", {}, TYPE_ES[a.type] || a.type, a.skipped ? " (saltada)" : ""), h("td", {}, mmss(a.seconds)), h("td", {}, a.score || "")))),
+        ...c.feedback.map(f => h("p", { class: "small" }, f.activity_id === "class" ? `⭐ ${f.rating || "-"}/5 ` : (f.rating > 0 ? "👍 " : f.rating < 0 ? "👎 " : "💬 ") + (TYPE_ES[f.type] || f.type) + ": ", f.comment || ""))));
+    }
+  }
+
   async function tabNotes(body) {
     const d = await api("/api/notes");
     const ta = h("textarea", { style: "min-height:220px" }, d.text);
@@ -174,14 +202,45 @@
   function stopTimer() { if (S.timer) clearInterval(S.timer); S.timer = null; }
   const clock = () => { const s = Math.floor((Date.now() - S.t0) / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
 
+  // Tiempo por actividad: se registra al salir de cada una.
+  function logCurrent() {
+    const c = S.cur; S.cur = null;
+    if (!c || !S.cls) return;
+    const body = { activityId: c.act.id, type: c.act.type, block: c.act.block, seconds: (Date.now() - c.t) / 1000, skipped: !S.done[c.act.id] };
+    const url = `/api/class/${S.cls.lesson.id}/log`;
+    if (navigator.sendBeacon) navigator.sendBeacon(url, new Blob([JSON.stringify(body)], { type: "application/json" }));
+    else api(url, { body }).catch(() => {});
+  }
+  window.addEventListener("pagehide", logCurrent);
+
+  function feedbackBar(act) {
+    const bar = h("div", { class: "fbbar" });
+    const send = (rating, comment) => api(`/api/class/${S.cls.lesson.id}/feedback`, { body: { activityId: act.id, type: act.type, rating, comment } }).catch(() => {});
+    const thanks = () => bar.replaceChildren(h("span", { class: "muted small" }, "Eskerrik asko! Lo tendré en cuenta."));
+    const ask = (rating) => {
+      const inp = h("input", { placeholder: rating < 0 ? "¿Qué no ha funcionado?" : "Tu comentario…" });
+      const ok = h("button", { class: "soft" }, "Bidali");
+      ok.onclick = () => { send(rating, inp.value); thanks(); };
+      inp.addEventListener("keydown", e => e.key === "Enter" && ok.click());
+      bar.replaceChildren(inp, ok); inp.focus();
+    };
+    bar.append(h("span", { class: "muted small grow" }, "¿Qué tal esta actividad?"),
+      h("button", { class: "fbbtn", title: "Bien", onclick: () => { send(1); thanks(); } }, "👍"),
+      h("button", { class: "fbbtn", title: "Mal", onclick: () => ask(-1) }, "👎"),
+      h("button", { class: "fbbtn", title: "Comentario", onclick: () => ask(0) }, "💬"));
+    return bar;
+  }
+
   function renderActivity() {
     stopVoice();
+    logCurrent();
     const { cls } = S;
     const act = cls.activities[S.idx];
+    S.cur = { act, t: Date.now() };
     const bi = cls.blocks.findIndex(b => b.key === act.block);
     const blocks = h("div", { class: "blocks" }, ...cls.blocks.map((b, i) => h("span", { class: i < bi ? "done" : i === bi ? "on" : "", title: b.es })));
     const top = h("div", { class: "topbar" },
-      h("div", { class: "row" }, h("button", { class: "close", title: "Salir", onclick: () => { if (confirm("¿Salir de la clase?")) renderHome(); } }, "✕"), blocks, h("span", { class: "timer" }, clock()),
+      h("div", { class: "row" }, h("button", { class: "close", title: "Salir", onclick: () => { if (confirm("¿Salir de la clase?")) { logCurrent(); renderHome(); } } }, "✕"), blocks, h("span", { class: "timer" }, clock()),
         h("button", { class: "close", title: "Voz", onclick: e => { S.voice = !S.voice; localStorage.setItem("irk_voice", S.voice ? "on" : "off"); e.target.textContent = S.voice ? "🔊" : "🔇"; if (!S.voice) stopVoice(); } }, S.voice ? "🔊" : "🔇")),
       h("div", { class: "blockname" }, h("span", {}, `${cls.blocks[bi].name} · ${cls.blocks[bi].es}`), h("span", {}, `${cls.lesson.emoji} ${cls.lesson.eu}`)));
     const av = avatar();
@@ -200,7 +259,7 @@
       nextBtn.textContent = S.idx === cls.activities.length - 1 ? "Amaitu ✓" : "Jarraitu →";
     };
     if (S.done[act.id]) markDone();
-    $app.replaceChildren(top, h("div", { class: "wrap" }, teacher, board), h("div", { class: "footer" }, h("div", { class: "row" }, prevBtn, h("span", { class: "muted small" }, `${S.idx + 1} / ${cls.activities.length}`), nextBtn)));
+    $app.replaceChildren(top, h("div", { class: "wrap" }, teacher, board, feedbackBar(act)), h("div", { class: "footer" }, h("div", { class: "row" }, prevBtn, h("span", { class: "muted small" }, `${S.idx + 1} / ${cls.activities.length}`), nextBtn)));
     window.scrollTo(0, 0);
     const R = RENDER[act.type];
     if (R) R(act, board, markDone); else { board.append(h("p", {}, "Actividad desconocida: " + act.type)); markDone(); }
@@ -208,15 +267,29 @@
   }
 
   async function finishClass() {
+    logCurrent();
     stopTimer(); stopVoice();
     const minutes = Math.round((Date.now() - S.t0) / 60000);
     api(`/api/class/${S.cls.lesson.id}/finish`, { body: { minutes } }).catch(() => {});
     S.state = await api("/api/state").catch(() => S.state);
     $app.replaceChildren(h("div", { class: "wrap center" }, h("div", { class: "loader" }, avatar(), h("h1", {}, "Bikain! 🎉"),
-      h("p", {}, `Clase «${S.cls.lesson.eu}» terminada en ${minutes} minutos.`),
+      h("p", {}, `Clase «${S.cls.lesson.eu}» terminada en ${minutes} ${minutes === 1 ? "minuto" : "minutos"}.`),
       h("p", { class: "muted" }, "Tus deberes están en «Etxeko lanak». Hasta la próxima: «Gero arte!»"),
+      classSurvey(S.cls.lesson.id),
       h("button", { onclick: () => { S.tab = "lanak"; renderHome(); } }, "Ver los deberes"), h("div", { style: "height:8px" }), h("button", { class: "ghost", onclick: () => { S.tab = "klaseak"; renderHome(); } }, "Inicio"))));
     teacherSays("¡Muy bien! Clase terminada. «Gero arte!»");
+  }
+
+  function classSurvey(lessonId) {
+    let rating = 0;
+    const stars = h("div", { class: "stars" });
+    const draw = () => stars.replaceChildren(...[1, 2, 3, 4, 5].map(n => h("button", { class: "fbbtn", onclick: () => { rating = n; draw(); } }, n <= rating ? "★" : "☆")));
+    draw();
+    const ta = h("textarea", { placeholder: "¿Qué cambiarías de esta clase? (ritmo, actividades, dificultad, Irati…)", style: "min-height:80px" });
+    const btn = h("button", {}, "Bidali");
+    const box = h("div", { class: "card", style: "text-align:left;margin:18px 0" }, h("b", {}, "¿Qué tal la clase?"), stars, ta, h("div", { style: "height:8px" }), btn);
+    btn.onclick = () => { api(`/api/class/${lessonId}/feedback`, { body: { activityId: "class", type: "class", rating, comment: ta.value } }).catch(() => {}); box.replaceChildren(h("p", {}, "Eskerrik asko! 💚")); };
+    return box;
   }
 
   // ---------- vista de corrección ----------
