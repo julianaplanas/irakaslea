@@ -92,7 +92,7 @@
         h("button", { onclick: () => startClass(next.id) }, "Hasi klasea →")));
     const warn = [];
     if (!st.claude) warn.push(h("div", { class: "card small" }, "⚠️ Falta OPENROUTER_API_KEY: las conversaciones, la corrección y los extras de cada clase no funcionarán."));
-    const tabs = h("div", { class: "tabs" }, ...[["klaseak", "Klaseak"], ["lanak", "Etxeko lanak"], ["bideoak", "Bideoak"], ["fitxa", "Fitxa"]].map(([k, label]) =>
+    const tabs = h("div", { class: "tabs" }, ...[["klaseak", "Klaseak"], ["lanak", "Etxeko lanak"], ["fitxa", "Fitxa"]].map(([k, label]) =>
       h("button", { class: S.tab === k ? "on" : "", onclick: () => { S.tab = k; renderHome(); } }, label)));
     const body = h("div");
     $app.replaceChildren(h("div", { class: "wrap" }, h("h1", { style: "margin-top:6px" }, "Irakaslea"), ...warn, hero, tabs, body));
@@ -384,7 +384,12 @@
       board.append(h("h3", {}, act.title || "Bideoa"));
       if (yt) board.append(h("div", { class: "video" }, h("iframe", { src: `https://www.youtube-nocookie.com/embed/${yt[1]}?cc_load_policy=1`, allowfullscreen: true })));
       else board.append(h("p", {}, "Este vídeo se abre en su web:"), h("a", { href: act.url, target: "_blank", rel: "noopener" }, h("button", {}, "▶ Abrir vídeo")));
-      if (act.note) board.append(h("p", { class: "muted small" }, act.note));
+      if (act.note) board.append(h("p", { class: "muted small" }, "👀 ", act.note));
+      if (act.videoId) {
+        const rej = h("button", { class: "ghost", style: "margin-top:10px" }, "Este vídeo no me sirve");
+        rej.onclick = async () => { rej.disabled = true; await api(`/api/videos/${act.videoId}/reject`, { body: {} }).catch(() => {}); rej.textContent = "Descartado: buscaré otro para la próxima vez"; };
+        board.append(rej);
+      }
       done({ ok: 1, total: 1 });
     },
 

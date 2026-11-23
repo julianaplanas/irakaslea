@@ -15,6 +15,7 @@ corrección de textos y deberes, ficha de la alumna) y los extras de cada clase,
 | Variable | Para qué |
 | --- | --- |
 | `OPENROUTER_API_KEY` | Conversación, corrección y extras de cada clase |
+| `YOUTUBE_API_KEY` | Para que cada clase busque su vídeo. Si no está, se usa `GOOGLE_TTS_KEY` (activa «YouTube Data API v3» en ese proyecto de Google Cloud) |
 | `APP_PASSWORD` | Contraseña para entrar (sin ella, la app queda abierta) |
 | `APP_SECRET` | Cadena larga aleatoria para firmar la sesión |
 | `GOOGLE_TTS_KEY` | Voz de Irati (la misma clave que en Euskara Praktika). Opcional: `GOOGLE_TTS_VOICE` (euskera) y `GOOGLE_TTS_VOICE_ES` (castellano) |

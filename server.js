@@ -10,6 +10,7 @@ const C = require("./lib/content");
 const claude = require("./lib/claude");
 const tts = require("./lib/tts");
 const { buildClass, generateExtras } = require("./lib/classBuilder");
+const videos = require("./lib/videos");
 
 const PORT = process.env.PORT || 3000;
 const DB_PATH = process.env.DB_PATH || path.join(__dirname, "data", "irakaslea.db");
@@ -23,6 +24,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS misses (eu TEXT PRIMARY KEY, es TEXT NOT NULL, lesson_id TEXT, count INTEGER NOT NULL DEFAULT 1, last TEXT NOT NULL DEFAULT (datetime('now')), reviewed INTEGER NOT NULL DEFAULT 0);
   CREATE TABLE IF NOT EXISTS homework (lesson_id TEXT PRIMARY KEY, brief TEXT NOT NULL, answer TEXT, correction TEXT, submitted_at TEXT, corrected_at TEXT);
   CREATE TABLE IF NOT EXISTS videos (id INTEGER PRIMARY KEY AUTOINCREMENT, lesson_id TEXT NOT NULL, url TEXT NOT NULL, title TEXT, note TEXT);
+  CREATE TABLE IF NOT EXISTS video_search (lesson_id TEXT PRIMARY KEY, searched_at TEXT NOT NULL DEFAULT (datetime('now')), excluded TEXT NOT NULL DEFAULT '[]');
   CREATE TABLE IF NOT EXISTS notes (id INTEGER PRIMARY KEY CHECK (id = 1), text TEXT NOT NULL DEFAULT '', updated_at TEXT);
   CREATE TABLE IF NOT EXISTS writings (id INTEGER PRIMARY KEY AUTOINCREMENT, lesson_id TEXT, prompt TEXT, text TEXT, correction TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
 `);
@@ -52,7 +54,7 @@ const notes = () => db.prepare("SELECT text FROM notes WHERE id = 1").get().text
 const weakWords = (n = 4) => db.prepare("SELECT eu, es FROM misses WHERE reviewed = 0 ORDER BY count DESC, last DESC LIMIT ?").all(n);
 const videosFor = id => {
   const l = C.byId[id];
-  return db.prepare("SELECT url, title, note FROM videos WHERE lesson_id = ? OR lesson_id = ? ORDER BY id").all(id, "m" + (l ? l.module : ""));
+  return db.prepare("SELECT id, url, title, note FROM videos WHERE lesson_id = ? OR lesson_id = ? ORDER BY id").all(id, "m" + (l ? l.module : ""));
 };
 
 async function getExtras(lesson) {
@@ -61,6 +63,19 @@ async function getExtras(lesson) {
   const ex = await generateExtras(lesson);
   if (claude.enabled() && ex.culture) db.prepare("INSERT OR REPLACE INTO extras (lesson_id, json) VALUES (?, ?)").run(lesson.id, JSON.stringify(ex));
   return ex;
+}
+
+// Busca un vídeo para la clase la primera vez que se prepara (o tras descartar uno).
+async function prepareVideo(lesson) {
+  if (!videos.enabled() || videosFor(lesson.id).length) return;
+  const row = db.prepare("SELECT * FROM video_search WHERE lesson_id = ?").get(lesson.id);
+  if (row && row.searched_at !== "pending") return;
+  const exclude = row ? JSON.parse(row.excluded) : [];
+  try {
+    const v = await videos.findVideo(lesson, C.moduleOf(lesson.id), exclude);
+    if (v) db.prepare("INSERT INTO videos (lesson_id, url, title, note) VALUES (?, ?, ?, ?)").run(lesson.id, v.url, v.title, v.note);
+    db.prepare("INSERT INTO video_search (lesson_id, excluded) VALUES (?, ?) ON CONFLICT(lesson_id) DO UPDATE SET searched_at = datetime('now')").run(lesson.id, JSON.stringify(exclude));
+  } catch (e) { console.error("Vídeo:", e.message); }
 }
 
 app.get("/api/state", (req, res) => {
@@ -83,7 +98,7 @@ app.get("/api/class/:id", async (req, res) => {
   const done = new Set(db.prepare("SELECT lesson_id FROM classes WHERE finished_at IS NOT NULL").all().map(r => r.lesson_id));
   const next = C.LESSONS.find(l => !done.has(l.id));
   if (!done.has(lesson.id) && next && lesson.id !== next.id) return res.status(403).json({ error: `Primero termina «${next.eu}».` });
-  const extras = await getExtras(lesson);
+  const [extras] = await Promise.all([getExtras(lesson), prepareVideo(lesson)]);
   const prev = C.prevLesson(lesson.id);
   const homework = prev ? db.prepare("SELECT * FROM homework WHERE lesson_id = ? AND corrected_at IS NOT NULL").get(prev.id) : null;
   if (homework) homework.correction = JSON.parse(homework.correction);
@@ -197,6 +212,19 @@ app.post("/api/videos", (req, res) => {
   const { lessonId, url, title, note } = req.body || {};
   if (!/^https?:\/\//.test(String(url || ""))) return res.status(400).json({ error: "Pega un enlace que empiece por http" });
   db.prepare("INSERT INTO videos (lesson_id, url, title, note) VALUES (?, ?, ?, ?)").run(String(lessonId), url, title || "", note || "");
+  res.json({ ok: true });
+});
+// «Este vídeo no me sirve»: se descarta y la próxima vez que prepares esa clase se busca otro.
+app.post("/api/videos/:id/reject", (req, res) => {
+  const v = db.prepare("SELECT * FROM videos WHERE id = ?").get(req.params.id);
+  if (!v) return res.json({ ok: true });
+  const vid = (String(v.url).match(/(?:v=|youtu\.be\/)([\w-]{11})/) || [])[1];
+  const row = db.prepare("SELECT excluded FROM video_search WHERE lesson_id = ?").get(v.lesson_id);
+  const exc = row ? JSON.parse(row.excluded) : [];
+  if (vid) exc.push(vid);
+  db.prepare("INSERT INTO video_search (lesson_id, searched_at, excluded) VALUES (?, 'pending', ?) ON CONFLICT(lesson_id) DO UPDATE SET searched_at = 'pending', excluded = excluded").run(v.lesson_id, JSON.stringify(exc));
+  db.prepare("UPDATE video_search SET excluded = ? WHERE lesson_id = ?").run(JSON.stringify(exc), v.lesson_id);
+  db.prepare("DELETE FROM videos WHERE id = ?").run(v.id);
   res.json({ ok: true });
 });
 app.delete("/api/videos/:id", (req, res) => { db.prepare("DELETE FROM videos WHERE id = ?").run(req.params.id); res.json({ ok: true }); });
