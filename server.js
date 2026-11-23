@@ -65,7 +65,7 @@ async function getExtras(lesson) {
 
 app.get("/api/state", (req, res) => {
   const done = Object.fromEntries(db.prepare("SELECT lesson_id, finished_at FROM classes").all().map(r => [r.lesson_id, r.finished_at]));
-  const hw = db.prepare("SELECT lesson_id, submitted_at, corrected_at FROM homework").all();
+  const hw = db.prepare("SELECT h.lesson_id, h.submitted_at, h.corrected_at FROM homework h JOIN classes c ON c.lesson_id = h.lesson_id WHERE c.finished_at IS NOT NULL").all();
   const next = C.LESSONS.find(l => !done[l.id]) || C.LESSONS[0];
   res.json({
     modules: C.MODULES.filter(m => C.LESSONS.some(l => l.module === m.id)).map(m => ({ id: m.id, eu: m.eu, es: m.es, town: m.town, level: m.id >= 9 ? "A2" : "A1" })),
@@ -174,11 +174,12 @@ app.post("/api/write", async (req, res) => {
 
 // ---------- deberes ----------
 app.get("/api/homework", (req, res) => {
-  res.json(db.prepare("SELECT * FROM homework ORDER BY rowid DESC").all().map(h => ({ ...h, correction: h.correction ? JSON.parse(h.correction) : null, lesson: C.byId[h.lesson_id] ? { eu: C.byId[h.lesson_id].eu, title: C.byId[h.lesson_id].title, emoji: C.byId[h.lesson_id].emoji } : null })));
+  res.json(db.prepare("SELECT h.* FROM homework h JOIN classes c ON c.lesson_id = h.lesson_id WHERE c.finished_at IS NOT NULL ORDER BY c.finished_at DESC").all().map(h => ({ ...h, correction: h.correction ? JSON.parse(h.correction) : null, lesson: C.byId[h.lesson_id] ? { eu: C.byId[h.lesson_id].eu, title: C.byId[h.lesson_id].title, emoji: C.byId[h.lesson_id].emoji } : null })));
 });
 app.post("/api/homework/:id", async (req, res) => {
   const h = db.prepare("SELECT * FROM homework WHERE lesson_id = ?").get(req.params.id);
-  if (!h) return res.status(404).json({ error: "No hay deberes para esa clase" });
+  const finished = db.prepare("SELECT 1 FROM classes WHERE lesson_id = ? AND finished_at IS NOT NULL").get(req.params.id);
+  if (!h || !finished) return res.status(404).json({ error: "No hay deberes para esa clase" });
   const answer = String((req.body || {}).answer || "").slice(0, 6000);
   if (!answer.trim()) return res.status(400).json({ error: "Escribe tu respuesta" });
   db.prepare("UPDATE homework SET answer = ?, submitted_at = datetime('now') WHERE lesson_id = ?").run(answer, req.params.id);

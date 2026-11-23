@@ -116,7 +116,7 @@
     body.append(h("p", { class: "muted" }, "Cargando…"));
     const list = await api("/api/homework");
     body.replaceChildren();
-    if (!list.length) return body.append(h("div", { class: "card muted" }, "Aún no hay deberes. Aparecen al empezar una clase."));
+    if (!list.length) return body.append(h("div", { class: "card muted" }, "Aún no hay deberes. Aparecen al terminar cada clase."));
     for (const hw of list) {
       const card = h("div", { class: "card" }, h("div", { class: "row" }, h("b", { class: "grow" }, `${hw.lesson ? hw.lesson.emoji + " " + hw.lesson.eu : hw.lesson_id}`),
         hw.corrected_at ? h("span", { class: "badge" }, "zuzenduta") : hw.submitted_at ? h("span", { class: "badge gold" }, "bidalita") : h("span", { class: "badge red" }, "egiteko")),
