@@ -80,6 +80,9 @@ app.get("/api/state", (req, res) => {
 app.get("/api/class/:id", async (req, res) => {
   const lesson = C.byId[req.params.id];
   if (!lesson) return res.status(404).json({ error: "No existe esa clase" });
+  const done = new Set(db.prepare("SELECT lesson_id FROM classes WHERE finished_at IS NOT NULL").all().map(r => r.lesson_id));
+  const next = C.LESSONS.find(l => !done.has(l.id));
+  if (!done.has(lesson.id) && next && lesson.id !== next.id) return res.status(403).json({ error: `Primero termina «${next.eu}».` });
   const extras = await getExtras(lesson);
   const prev = C.prevLesson(lesson.id);
   const homework = prev ? db.prepare("SELECT * FROM homework WHERE lesson_id = ? AND corrected_at IS NOT NULL").get(prev.id) : null;

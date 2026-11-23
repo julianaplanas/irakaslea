@@ -103,9 +103,12 @@
     const st = S.state;
     for (const m of st.modules) {
       body.append(h("div", { class: "module" }, h("h3", {}, `${m.id}. ${m.eu} `, h("span", { class: "muted small" }, `${m.es} · ${m.town} · ${m.level}`)),
-        ...st.lessons.filter(l => l.module === m.id).map(l => h("div", { class: "lesson" + (l.done ? " done" : "") + (l.id === st.next ? " next" : ""), onclick: () => startClass(l.id) },
+        ...st.lessons.filter(l => l.module === m.id).map(l => {
+          const locked = !l.done && l.id !== st.next;
+          return h("div", { class: "lesson" + (l.done ? " done" : "") + (l.id === st.next ? " next" : "") + (locked ? " locked" : ""), onclick: () => { if (!locked) startClass(l.id); } },
           h("span", { class: "em" }, l.emoji), h("div", { class: "grow" }, h("b", {}, l.eu), h("div", { class: "muted small" }, l.title)),
-          l.done ? h("span", { class: "badge" }, "✓ eginda") : l.id === st.next ? h("span", { class: "badge gold" }, "hurrengoa") : null))));
+          l.done ? h("span", { class: "badge" }, "✓ eginda") : l.id === st.next ? h("span", { class: "badge gold" }, "hurrengoa") : h("span", { class: "muted" }, "🔒"));
+        })));
     }
   }
 
