@@ -123,7 +123,7 @@ app.post("/api/class/:id/finish", async (req, res) => {
 
 // ---------- conversación con Irati (role-play) ----------
 app.post("/api/chat", async (req, res) => {
-  if (!claude.enabled()) return res.json({ text: "Ahora mismo no puedo conversar (falta la clave de Claude). Salta esta actividad con «Jarraitu»." });
+  if (!claude.enabled()) return res.json({ text: "Ahora mismo no puedo conversar (falta la clave de OpenRouter). Salta esta actividad con «Jarraitu»." });
   const { lessonId, situation, goal, messages = [], turnsLeft = 3 } = req.body || {};
   const lesson = C.byId[lessonId];
   if (!lesson) return res.status(400).json({ error: "clase" });
@@ -159,7 +159,7 @@ async function correct(lesson, prompt, text) {
   });
 }
 app.post("/api/write", async (req, res) => {
-  if (!claude.enabled()) return res.status(503).json({ error: "Falta la clave de Claude para corregir." });
+  if (!claude.enabled()) return res.status(503).json({ error: "Falta la clave de OpenRouter para corregir." });
   const { lessonId, prompt, text } = req.body || {};
   if (!String(text || "").trim()) return res.status(400).json({ error: "Escribe algo primero" });
   try {

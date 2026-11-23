@@ -91,7 +91,7 @@
         h("div", { style: "height:10px" }),
         h("button", { onclick: () => startClass(next.id) }, "Hasi klasea →")));
     const warn = [];
-    if (!st.claude) warn.push(h("div", { class: "card small" }, "⚠️ Falta ANTHROPIC_API_KEY: las conversaciones, la corrección y los extras de cada clase no funcionarán."));
+    if (!st.claude) warn.push(h("div", { class: "card small" }, "⚠️ Falta OPENROUTER_API_KEY: las conversaciones, la corrección y los extras de cada clase no funcionarán."));
     const tabs = h("div", { class: "tabs" }, ...[["klaseak", "Klaseak"], ["lanak", "Etxeko lanak"], ["bideoak", "Bideoak"], ["fitxa", "Fitxa"]].map(([k, label]) =>
       h("button", { class: S.tab === k ? "on" : "", onclick: () => { S.tab = k; renderHome(); } }, label)));
     const body = h("div");
