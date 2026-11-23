@@ -1,0 +1,574 @@
+/* Irakaslea — interfaz. Vanilla JS, sin build. */
+(() => {
+  const $app = document.getElementById("app");
+  const S = { state: null, cls: null, idx: 0, t0: 0, timer: null, done: {}, voice: localStorage.getItem("irk_voice") !== "off", tab: "klaseak" };
+
+  // ---------- utilidades ----------
+  function h(tag, props, ...kids) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(props || {})) {
+      if (v == null || v === false) continue;
+      if (k === "class") el.className = v;
+      else if (k.startsWith("on")) el.addEventListener(k.slice(2), v);
+      else if (k === "html") el.innerHTML = v;
+      else el.setAttribute(k, v === true ? "" : v);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+    return el;
+  }
+  async function api(path, opts = {}) {
+    const r = await fetch(path, { method: opts.method || (opts.body ? "POST" : "GET"), headers: opts.body ? { "Content-Type": "application/json" } : {}, body: opts.body ? JSON.stringify(opts.body) : undefined });
+    if (r.status === 401) { renderLogin(); throw new Error("login"); }
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || "Error " + r.status);
+    return d;
+  }
+  const norm = s => String(s || "").toLowerCase().normalize("NFC").replace(/[¿¡?!.,;:«»"'()…\-–—]/g, " ").replace(/\s+/g, " ").trim();
+  const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  const avatar = (cls = "avatar") => h("div", { class: cls, html: window.IRATI_SVG });
+  const stripEmoji = s => s.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "").trim();
+
+  // Texto con «euskera» marcado: se pinta en verde y al tocarlo se oye.
+  function rich(text) {
+    const span = h("span");
+    String(text || "").split(/(«[^»]+»)/g).forEach(part => {
+      if (/^«[^»]+»$/.test(part)) { const eu = part.slice(1, -1); span.append(h("span", { class: "eu", onclick: e => { e.stopPropagation(); say(eu, "eu"); } }, eu)); }
+      else span.append(part);
+    });
+    return span;
+  }
+
+  // ---------- voz ----------
+  let queue = [], current = null, talkingEl = null;
+  function stopVoice() { queue = []; if (current) { current.pause(); current = null; } setTalking(false); }
+  function setTalking(on) { if (talkingEl) talkingEl.classList.toggle("talking", on); }
+  function playNext() {
+    const seg = queue.shift();
+    if (!seg) { current = null; setTalking(false); return; }
+    const a = new Audio(`/api/tts?lang=${seg.lang}&text=${encodeURIComponent(seg.text)}`);
+    current = a; setTalking(true);
+    a.onended = playNext; a.onerror = playNext;
+    a.play().catch(playNext);
+  }
+  function speak(segments) { stopVoice(); queue = segments.filter(s => s.text && /[a-záéíóúñ0-9]/i.test(s.text)); playNext(); }
+  function say(text, lang = "eu") { speak([{ text: stripEmoji(text), lang }]); }
+  function teacherSays(text) {
+    if (!S.voice) return;
+    const segs = String(text).split(/(«[^»]+»)/g).map(p => /^«[^»]+»$/.test(p) ? { text: p.slice(1, -1), lang: "eu" } : { text: stripEmoji(p), lang: "es" });
+    speak(segs);
+  }
+  const playBtn = (text, label = "🔊", cls = "play") => h("button", { class: cls, onclick: e => { e.stopPropagation(); say(text, "eu"); } }, label);
+
+  // ---------- acceso ----------
+  function renderLogin() {
+    stopTimer();
+    const inp = h("input", { type: "password", placeholder: "Contraseña", autocomplete: "current-password" });
+    const err = h("p", { class: "muted small" });
+    const go = async () => {
+      try { await api("/api/login", { body: { password: inp.value } }); boot(); }
+      catch (e) { if (e.message !== "login") err.textContent = e.message; }
+    };
+    inp.addEventListener("keydown", e => e.key === "Enter" && go());
+    $app.replaceChildren(h("div", { class: "login card" }, avatar(), h("h1", {}, "Kaixo!"), h("p", { class: "muted" }, "Soy Irati, tu profesora de euskera."), inp, h("div", { style: "height:10px" }), h("button", { onclick: go, style: "width:100%" }, "Sartu"), err));
+    inp.focus();
+  }
+
+  // ---------- inicio ----------
+  async function boot() {
+    try { S.state = await api("/api/state"); } catch (e) { return; }
+    renderHome();
+  }
+
+  function renderHome() {
+    stopTimer(); stopVoice();
+    const st = S.state;
+    const next = st.lessons.find(l => l.id === st.next);
+    const hero = h("div", { class: "card hero" }, avatar(),
+      h("div", { class: "grow" },
+        h("div", { class: "muted small" }, "Hurrengo klasea · próxima clase"),
+        h("h2", {}, `${next.emoji} ${next.eu}`),
+        h("div", { class: "muted" }, next.title),
+        h("div", { style: "height:10px" }),
+        h("button", { onclick: () => startClass(next.id) }, "Hasi klasea →")));
+    const warn = [];
+    if (!st.claude) warn.push(h("div", { class: "card small" }, "⚠️ Falta ANTHROPIC_API_KEY: las conversaciones, la corrección y los extras de cada clase no funcionarán."));
+    const tabs = h("div", { class: "tabs" }, ...[["klaseak", "Klaseak"], ["lanak", "Etxeko lanak"], ["bideoak", "Bideoak"], ["fitxa", "Fitxa"]].map(([k, label]) =>
+      h("button", { class: S.tab === k ? "on" : "", onclick: () => { S.tab = k; renderHome(); } }, label)));
+    const body = h("div");
+    $app.replaceChildren(h("div", { class: "wrap" }, h("h1", { style: "margin-top:6px" }, "Irakaslea"), ...warn, hero, tabs, body));
+    ({ klaseak: tabClasses, lanak: tabHomework, bideoak: tabVideos, fitxa: tabNotes })[S.tab](body);
+  }
+
+  function tabClasses(body) {
+    const st = S.state;
+    for (const m of st.modules) {
+      body.append(h("div", { class: "module" }, h("h3", {}, `${m.id}. ${m.eu} `, h("span", { class: "muted small" }, `${m.es} · ${m.town} · ${m.level}`)),
+        ...st.lessons.filter(l => l.module === m.id).map(l => h("div", { class: "lesson" + (l.done ? " done" : "") + (l.id === st.next ? " next" : ""), onclick: () => startClass(l.id) },
+          h("span", { class: "em" }, l.emoji), h("div", { class: "grow" }, h("b", {}, l.eu), h("div", { class: "muted small" }, l.title)),
+          l.done ? h("span", { class: "badge" }, "✓ eginda") : l.id === st.next ? h("span", { class: "badge gold" }, "hurrengoa") : null))));
+    }
+  }
+
+  async function tabHomework(body) {
+    body.append(h("p", { class: "muted" }, "Cargando…"));
+    const list = await api("/api/homework");
+    body.replaceChildren();
+    if (!list.length) return body.append(h("div", { class: "card muted" }, "Aún no hay deberes. Aparecen al empezar una clase."));
+    for (const hw of list) {
+      const card = h("div", { class: "card" }, h("div", { class: "row" }, h("b", { class: "grow" }, `${hw.lesson ? hw.lesson.emoji + " " + hw.lesson.eu : hw.lesson_id}`),
+        hw.corrected_at ? h("span", { class: "badge" }, "zuzenduta") : hw.submitted_at ? h("span", { class: "badge gold" }, "bidalita") : h("span", { class: "badge red" }, "egiteko")),
+        h("p", { class: "pre" }, hw.brief));
+      if (hw.correction) card.append(correctionView(hw.correction));
+      else {
+        const ta = h("textarea", { placeholder: "Escribe aquí tus respuestas…" }, hw.answer || "");
+        const msg = h("p", { class: "muted small" });
+        const btn = h("button", {}, "Bidali");
+        btn.onclick = async () => {
+          btn.disabled = true; msg.textContent = "Irati lo está corrigiendo…";
+          try { const r = await api(`/api/homework/${hw.lesson_id}`, { body: { answer: ta.value } }); if (r.correction) { card.replaceChildren(h("b", {}, "Zuzenketa"), correctionView(r.correction)); } else msg.textContent = "Entregado. Se corregirá cuando haya conexión con Claude."; }
+          catch (e) { msg.textContent = e.message; btn.disabled = false; }
+        };
+        card.append(ta, h("div", { style: "height:8px" }), btn, msg);
+      }
+      body.append(card);
+    }
+  }
+
+  async function tabVideos(body) {
+    const st = S.state;
+    const sel = h("select", { style: "width:100%;padding:.6em;border-radius:12px;border:2px solid var(--line);font:inherit" },
+      ...st.modules.map(m => h("option", { value: "m" + m.id }, `Módulo ${m.id} · ${m.eu} (todas sus clases)`)),
+      ...st.lessons.map(l => h("option", { value: l.id }, `${l.eu} — ${l.title}`)));
+    const url = h("input", { placeholder: "Enlace (INGURA, Ikasbil, YouTube, EITB…)" });
+    const title = h("input", { placeholder: "Título (opcional)" });
+    const msg = h("p", { class: "muted small" });
+    const add = h("button", { onclick: async () => { try { await api("/api/videos", { body: { lessonId: sel.value, url: url.value, title: title.value } }); renderHome(); } catch (e) { msg.textContent = e.message; } } }, "Gehitu bideoa");
+    body.append(h("div", { class: "card" }, h("p", { class: "small muted" }, "Pega aquí vídeos para una clase o para todo un módulo. Aparecerán en el bloque «Tema nuevo»."), sel, h("div", { style: "height:8px" }), url, h("div", { style: "height:8px" }), title, h("div", { style: "height:10px" }), add, msg));
+    const vids = await api("/api/videos");
+    for (const v of vids) body.append(h("div", { class: "card row" }, h("div", { class: "grow" }, h("b", {}, v.title || v.url), h("div", { class: "muted small" }, v.lesson_id + " · " + v.url)),
+      h("button", { class: "ghost", onclick: async () => { await api(`/api/videos/${v.id}`, { method: "DELETE" }); renderHome(); } }, "Kendu")));
+  }
+
+  async function tabNotes(body) {
+    const d = await api("/api/notes");
+    const ta = h("textarea", { style: "min-height:220px" }, d.text);
+    const msg = h("span", { class: "muted small" });
+    body.append(h("div", { class: "card" }, h("p", { class: "small muted" }, "Lo que Irati sabe de ti. Se actualiza sola al acabar cada clase; puedes editarla."), ta, h("div", { style: "height:8px" }),
+      h("div", { class: "row" }, h("button", { onclick: async () => { await api("/api/notes", { method: "PUT", body: { text: ta.value } }); msg.textContent = "Gordeta ✓"; } }, "Gorde"), msg)));
+    if (d.weak.length) body.append(h("div", { class: "card" }, h("b", {}, "Palabras que se te resisten"), h("p", {}, ...d.weak.map(w => h("span", { class: "badge red", style: "margin:3px;display:inline-block" }, `${w.eu} · ${w.es}`)))));
+  }
+
+  // ---------- clase ----------
+  async function startClass(id) {
+    stopVoice();
+    $app.replaceChildren(h("div", { class: "loader" }, h("div", { class: "avatar talking", html: window.IRATI_SVG }), h("h2", {}, "Irati está preparando la clase…"), h("p", { class: "muted" }, "La primera vez tarda unos segundos.")));
+    try { S.cls = await api(`/api/class/${id}`); } catch (e) { if (e.message !== "login") $app.replaceChildren(h("div", { class: "wrap" }, h("p", {}, e.message), h("button", { onclick: renderHome }, "Volver"))); return; }
+    S.idx = 0; S.done = {}; S.t0 = Date.now();
+    startTimer();
+    renderActivity();
+  }
+  function startTimer() { stopTimer(); S.timer = setInterval(() => { const el = document.querySelector(".timer"); if (el) el.textContent = clock(); }, 1000); }
+  function stopTimer() { if (S.timer) clearInterval(S.timer); S.timer = null; }
+  const clock = () => { const s = Math.floor((Date.now() - S.t0) / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+
+  function renderActivity() {
+    stopVoice();
+    const { cls } = S;
+    const act = cls.activities[S.idx];
+    const bi = cls.blocks.findIndex(b => b.key === act.block);
+    const blocks = h("div", { class: "blocks" }, ...cls.blocks.map((b, i) => h("span", { class: i < bi ? "done" : i === bi ? "on" : "", title: b.es })));
+    const top = h("div", { class: "topbar" },
+      h("div", { class: "row" }, h("button", { class: "close", title: "Salir", onclick: () => { if (confirm("¿Salir de la clase?")) renderHome(); } }, "✕"), blocks, h("span", { class: "timer" }, clock()),
+        h("button", { class: "close", title: "Voz", onclick: e => { S.voice = !S.voice; localStorage.setItem("irk_voice", S.voice ? "on" : "off"); e.target.textContent = S.voice ? "🔊" : "🔇"; if (!S.voice) stopVoice(); } }, S.voice ? "🔊" : "🔇")),
+      h("div", { class: "blockname" }, h("span", {}, `${cls.blocks[bi].name} · ${cls.blocks[bi].es}`), h("span", {}, `${cls.lesson.emoji} ${cls.lesson.eu}`)));
+    const av = avatar();
+    av.onclick = () => teacherSays(act.intro);
+    const teacher = h("div", { class: "teacher" }, av, h("div", { class: "bubble" }, rich(act.intro)));
+    talkingEl = av;
+    const board = h("div", { class: "board" });
+    const nextBtn = h("button", { class: "next ghost" }, S.idx === cls.activities.length - 1 ? "Amaitu" : "Saltatu →");
+    const prevBtn = h("button", { class: "soft", disabled: S.idx === 0 }, "←");
+    prevBtn.onclick = () => { S.idx--; renderActivity(); };
+    nextBtn.onclick = () => { if (S.idx === cls.activities.length - 1) return finishClass(); S.idx++; renderActivity(); };
+    const markDone = (result) => {
+      if (!S.done[act.id] && result) api(`/api/class/${cls.lesson.id}/result`, { body: { activityId: act.id, type: act.type, ...result } }).catch(() => {});
+      S.done[act.id] = true;
+      nextBtn.className = "next";
+      nextBtn.textContent = S.idx === cls.activities.length - 1 ? "Amaitu ✓" : "Jarraitu →";
+    };
+    if (S.done[act.id]) markDone();
+    $app.replaceChildren(top, h("div", { class: "wrap" }, teacher, board), h("div", { class: "footer" }, h("div", { class: "row" }, prevBtn, h("span", { class: "muted small" }, `${S.idx + 1} / ${cls.activities.length}`), nextBtn)));
+    window.scrollTo(0, 0);
+    const R = RENDER[act.type];
+    if (R) R(act, board, markDone); else { board.append(h("p", {}, "Actividad desconocida: " + act.type)); markDone(); }
+    setTimeout(() => teacherSays(act.intro), 250);
+  }
+
+  async function finishClass() {
+    stopTimer(); stopVoice();
+    const minutes = Math.round((Date.now() - S.t0) / 60000);
+    api(`/api/class/${S.cls.lesson.id}/finish`, { body: { minutes } }).catch(() => {});
+    S.state = await api("/api/state").catch(() => S.state);
+    $app.replaceChildren(h("div", { class: "wrap center" }, h("div", { class: "loader" }, avatar(), h("h1", {}, "Bikain! 🎉"),
+      h("p", {}, `Clase «${S.cls.lesson.eu}» terminada en ${minutes} minutos.`),
+      h("p", { class: "muted" }, "Tus deberes están en «Etxeko lanak». Hasta la próxima: «Gero arte!»"),
+      h("button", { onclick: () => { S.tab = "lanak"; renderHome(); } }, "Ver los deberes"), h("div", { style: "height:8px" }), h("button", { class: "ghost", onclick: () => { S.tab = "klaseak"; renderHome(); } }, "Inicio"))));
+    teacherSays("¡Muy bien! Clase terminada. «Gero arte!»");
+  }
+
+  // ---------- vista de corrección ----------
+  function correctionView(c) {
+    return h("div", { class: "corr" },
+      c.corrected ? h("p", {}, h("b", {}, "Corregido: "), c.corrected) : null,
+      ...(c.errors || []).map(e => h("div", { class: "err" }, h("s", {}, e.wrong), " → ", h("b", {}, e.right), h("div", { class: "small" }, e.why))),
+      !(c.errors || []).length ? h("p", {}, "✅ ¡Sin errores!") : null,
+      c.good ? h("p", {}, "⭐ ", c.good) : null,
+      c.next ? h("p", { class: "muted" }, "➡️ ", c.next) : null);
+  }
+
+  // ---------- ejercicio genérico de varios ítems ----------
+  function sequence(board, items, renderItem, done) {
+    let i = 0, ok = 0; const misses = [], hits = [];
+    const box = h("div");
+    board.append(box);
+    const next = () => {
+      if (i >= items.length) {
+        box.replaceChildren(h("div", { class: "center" }, h("div", { class: "prompt" }, `${ok} / ${items.length}`), h("p", { class: "muted" }, ok === items.length ? "Perfecto 👏" : ok >= items.length / 2 ? "Bien, sigue así." : "Lo repasamos en la próxima clase.")));
+        return done({ ok, total: items.length, misses, hits });
+      }
+      box.replaceChildren(h("div", { class: "counter" }, `${i + 1} / ${items.length}`));
+      renderItem(items[i], box, (right, miss) => {
+        if (right) { ok++; if (miss && miss.eu) hits.push(miss.eu); } else if (miss) misses.push(miss);
+        i++;
+      }, next);
+    };
+    next();
+  }
+  const fb = (right, text) => h("div", { class: "feedback " + (right ? "ok" : "ko") }, right ? "✅ " : "❌ ", text);
+
+  // ---------- conversación ----------
+  function chatMsg(role, text) {
+    if (role === "s") return h("div", { class: "msg s" }, text);
+    const lines = String(text).split("\n");
+    const main = lines.filter(l => !/^\s*(✏️|⭐)/.test(l)).join("\n").trim();
+    const fixes = lines.filter(l => /^\s*✏️/.test(l));
+    const stars = lines.filter(l => /^\s*⭐/.test(l));
+    const euOnly = main.replace(/\([^)]*\)/g, "").trim();
+    return h("div", { class: "msg t" }, rich(main), " ", playBtn(euOnly, "🔊"),
+      ...fixes.map(f => h("span", { class: "fix" }, rich(f))), ...stars.map(s => h("span", { class: "star" }, rich(s))));
+  }
+
+  function micButton(input) {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return null;
+    const b = h("button", { class: "soft", title: "Hablar en euskera" }, "🎤");
+    b.onclick = () => {
+      const rec = new SR(); rec.lang = "eu-ES"; rec.interimResults = false;
+      b.textContent = "⏺"; rec.onresult = e => { input.value = (input.value + " " + e.results[0][0].transcript).trim(); };
+      rec.onend = () => { b.textContent = "🎤"; }; rec.onerror = () => { b.textContent = "🎤"; };
+      stopVoice(); rec.start();
+    };
+    return b;
+  }
+
+  const RENDER = {
+    roleplay(act, board, done) {
+      const msgs = [];
+      const chat = h("div", { class: "chat" });
+      const input = h("input", { placeholder: "Idatzi euskaraz…" });
+      const send = h("button", {}, "➤");
+      let userTurns = 0;
+      board.append(h("p", { class: "small muted" }, "🎭 ", act.situation), h("p", { class: "small" }, "🎯 ", act.goal), chat, h("div", { class: "chat-input" }, input, micButton(input), send));
+      const add = (role, text) => { chat.append(chatMsg(role, text)); chat.scrollTop = chat.scrollHeight; };
+      if (act.starter) { msgs.push({ role: "assistant", content: act.starter }); add("t", act.starter); setTimeout(() => S.voice && say(act.starter.replace(/\([^)]*\)/g, ""), "eu"), 2600); }
+      const go = async () => {
+        const text = input.value.trim(); if (!text) return;
+        input.value = ""; msgs.push({ role: "user", content: text }); add("s", text); userTurns++;
+        send.disabled = true;
+        const typing = h("div", { class: "msg t muted" }, "…"); chat.append(typing);
+        try {
+          const r = await api("/api/chat", { body: { lessonId: S.cls.lesson.id, situation: act.situation, goal: act.goal, messages: msgs, turnsLeft: Math.max(0, act.turns - userTurns) } });
+          typing.remove(); msgs.push({ role: "assistant", content: r.text }); add("t", r.text);
+          if (S.voice) say(r.text.split("\n").filter(l => !/^\s*(✏️|⭐)/.test(l)).join(" ").replace(/\([^)]*\)/g, ""), "eu");
+        } catch (e) { typing.textContent = e.message; }
+        send.disabled = false; input.focus();
+        if (userTurns >= Math.min(2, act.turns)) done(userTurns >= act.turns ? { ok: 1, total: 1 } : null);
+        if (userTurns >= act.turns) { input.disabled = true; send.disabled = true; }
+      };
+      send.onclick = go; input.addEventListener("keydown", e => e.key === "Enter" && go());
+    },
+
+    feedback(act, board, done) {
+      const hw = act.homework;
+      board.append(h("p", { class: "small muted pre" }, hw.brief), correctionView(hw.correction));
+      done();
+    },
+
+    memory(act, board, done) {
+      const tiles = shuffle(act.pairs.flatMap((p, i) => [{ k: i, t: p[0], eu: true }, { k: i, t: (p[2] && p[2] !== "🔁" ? p[2] + " " : "") + p[1] }]));
+      const grid = h("div", { class: "memory" });
+      let open = [], found = 0, tries = 0;
+      tiles.forEach(tile => {
+        const b = h("button", {}, "?");
+        b.onclick = () => {
+          if (b.classList.contains("up") || b.classList.contains("gone") || open.length === 2) return;
+          b.textContent = tile.t; b.classList.add("up"); if (tile.eu) say(tile.t);
+          open.push({ b, tile });
+          if (open.length === 2) {
+            tries++;
+            const [x, y] = open;
+            setTimeout(() => {
+              if (x.tile.k === y.tile.k && x.tile.eu !== y.tile.eu) { [x, y].forEach(o => { o.b.classList.remove("up"); o.b.classList.add("gone"); }); found++; if (found === act.pairs.length) done({ ok: act.pairs.length, total: tries, hits: act.pairs.map(p => p[0]) }); }
+              else [x, y].forEach(o => { o.b.classList.remove("up"); o.b.textContent = "?"; });
+              open = [];
+            }, 900);
+          }
+        };
+        grid.append(b);
+      });
+      board.append(grid);
+    },
+
+    scene(act, board, done) {
+      const showTr = { on: false };
+      const lines = act.lines.map(([who, eu, es]) => {
+        const tr = h("span", { class: "tr hidden" }, es);
+        return { el: h("div", { class: "line " + (who === "B" ? "B" : "A") }, h("div", { class: "who" }, who), h("div", { class: "say", onclick: () => say(eu) }, eu, tr)), tr, eu };
+      });
+      const playAll = () => speak(lines.map(l => ({ text: l.eu, lang: "eu" })));
+      board.append(h("div", { class: "scene-head" }, `${act.emoji || "🎬"} ${act.title || ""}`),
+        ...lines.map(l => l.el),
+        h("div", { class: "row", style: "margin-top:12px" }, h("button", { class: "play", onclick: playAll }, "▶ Entzun dena"),
+          h("button", { class: "soft", onclick: () => { showTr.on = !showTr.on; lines.forEach(l => l.tr.classList.toggle("hidden", !showTr.on)); } }, "Itzulpena")));
+      setTimeout(() => done({ ok: 1, total: 1 }), 1500);
+    },
+
+    slides(act, board, done) {
+      let i = 0;
+      const box = h("div");
+      const dots = h("div", { class: "dots" });
+      const prev = h("button", { class: "soft" }, "←"), next = h("button", {}, "→");
+      const show = () => {
+        const s = act.slides[i];
+        box.replaceChildren(h("div", { class: "slide" },
+          s.emoji ? h("div", { class: "em" }, s.emoji) : null,
+          h("h2", {}, s.title), s.subtitle ? h("div", { class: "muted" }, s.subtitle) : null,
+          s.body ? h("p", {}, s.body) : null,
+          s.pattern ? h("div", { class: "pattern" }, s.pattern) : null,
+          s.table ? h("table", {}, h("tr", {}, ...s.table.cols.map(c => h("th", {}, c))), ...s.table.rows.map(r => h("tr", {}, ...r.map((c, j) => h("td", j === 0 ? {} : {}, c))))) : null,
+          s.examples && s.examples.length ? h("div", { class: "ex" }, ...s.examples.map(([eu, es]) => h("p", {}, playBtn(eu), " ", h("b", {}, eu), h("span", { class: "muted" }, " — " + es)))) : null));
+        dots.replaceChildren(...act.slides.map((_, j) => h("i", { class: j === i ? "on" : "" })));
+        prev.disabled = i === 0; next.disabled = i === act.slides.length - 1;
+        if (i === act.slides.length - 1) done({ ok: 1, total: 1 });
+      };
+      prev.onclick = () => { i--; show(); }; next.onclick = () => { i++; show(); };
+      board.append(box, dots, h("div", { class: "row", style: "justify-content:center;margin-top:10px" }, prev, next));
+      show();
+    },
+
+    cards(act, board, done) {
+      const seen = new Set();
+      board.append(h("div", { class: "cards" }, ...act.pairs.map(([eu, es, em], i) => {
+        const c = h("div", { class: "flip" }, h("div", { class: "in" }, h("div", { class: "f" }, h("div", {}, h("span", { class: "em" }, em || ""), h("b", {}, eu))), h("div", { class: "b" }, es)));
+        c.onclick = () => { const turning = !c.classList.contains("on"); c.classList.toggle("on"); if (turning) { seen.add(i); say(eu); } if (seen.size === act.pairs.length) done({ ok: 1, total: 1 }); };
+        return c;
+      })), h("p", { class: "small muted" }, "Toca cada tarjeta: la oyes y ves qué significa."));
+      setTimeout(() => say(act.pairs[0][0]), 2500);
+    },
+
+    video(act, board, done) {
+      const yt = String(act.url).match(/(?:youtu\.be\/|v=|embed\/)([\w-]{11})/);
+      board.append(h("h3", {}, act.title || "Bideoa"));
+      if (yt) board.append(h("div", { class: "video" }, h("iframe", { src: `https://www.youtube-nocookie.com/embed/${yt[1]}?cc_load_policy=1`, allowfullscreen: true })));
+      else board.append(h("p", {}, "Este vídeo se abre en su web:"), h("a", { href: act.url, target: "_blank", rel: "noopener" }, h("button", {}, "▶ Abrir vídeo")));
+      if (act.note) board.append(h("p", { class: "muted small" }, act.note));
+      done({ ok: 1, total: 1 });
+    },
+
+    mcq(act, board, done) {
+      sequence(board, act.items, (it, box, mark, next) => {
+        const q = act.listen ? h("div", { class: "center" }, h("button", { class: "play big", onclick: () => say(it.q) }, "🔊 Entzun")) : h("div", { class: "prompt" }, it.q, " ", playBtn(it.q));
+        const out = h("div");
+        const btns = it.options.map(o => h("button", { class: "choice" }, o));
+        btns.forEach(b => b.onclick = () => {
+          btns.forEach(x => x.disabled = true);
+          const right = b.textContent === it.answer;
+          b.classList.add(right ? "ok" : "ko"); btns.find(x => x.textContent === it.answer).classList.add("ok");
+          out.append(fb(right, act.listen ? it.q : it.answer));
+          mark(right, { eu: it.q, es: it.answer });
+          setTimeout(next, right ? 900 : 2200);
+        });
+        box.append(q, h("div", { class: "choices" }, ...btns), out);
+        setTimeout(() => say(it.q), act.listen ? 400 : 700);
+      }, done);
+    },
+
+    match(act, board, done) {
+      const left = shuffle(act.pairs.map((p, i) => ({ i, t: p[0] })));
+      const right = shuffle(act.pairs.map((p, i) => ({ i, t: p[1], em: p[2] })));
+      let sel = null, found = 0, errors = 0;
+      const misses = [];
+      const grid = h("div", { class: "match" });
+      const L = left.map(x => h("button", { onclick: () => { say(x.t); if (sel) sel.el.classList.remove("sel"); sel = { ...x, el: L[left.indexOf(x)] }; sel.el.classList.add("sel"); } }, x.t));
+      const Rb = right.map(x => h("button", { onclick: () => {
+        if (!sel) return;
+        const b = Rb[right.indexOf(x)];
+        if (sel.i === x.i) { sel.el.classList.add("gone"); b.classList.add("gone"); sel = null; found++; if (found === act.pairs.length) done({ ok: act.pairs.length - errors, total: act.pairs.length, misses }); }
+        else { errors++; misses.push({ eu: act.pairs[sel.i][0], es: act.pairs[sel.i][1] }); b.classList.add("sel"); setTimeout(() => b.classList.remove("sel"), 400); }
+      } }, h("span", { class: "em" }, x.em || ""), h("div", { class: "small" }, x.t)));
+      for (let k = 0; k < left.length; k++) grid.append(L[k], Rb[k]);
+      board.append(grid);
+    },
+
+    order(act, board, done) {
+      sequence(board, act.items, (it, box, mark, next) => {
+        const words = it.eu.replace(/[.!?]+$/, "").split(/\s+/);
+        const answer = h("div", { class: "tiles answer-area" }); const pool = h("div", { class: "tiles" });
+        const picked = [];
+        const out = h("div");
+        const check = h("button", { disabled: true }, "Egiaztatu");
+        shuffle(words.map((w, k) => ({ w, k }))).forEach(t => {
+          const b = h("button", { class: "tile" }, t.w);
+          b.onclick = () => {
+            if (b.classList.contains("used")) return;
+            b.classList.add("used"); picked.push(t);
+            const a = h("button", { class: "tile" }, t.w);
+            a.onclick = () => { picked.splice(picked.indexOf(t), 1); a.remove(); b.classList.remove("used"); check.disabled = picked.length !== words.length; };
+            answer.append(a); check.disabled = picked.length !== words.length;
+          };
+          pool.append(b);
+        });
+        check.onclick = () => {
+          const right = norm(picked.map(p => p.w).join(" ")) === norm(it.eu);
+          check.disabled = true; out.append(fb(right, it.eu)); say(it.eu);
+          mark(right, { eu: it.eu, es: it.es }); setTimeout(next, right ? 1500 : 2800);
+        };
+        box.append(h("p", { class: "muted" }, it.es), answer, pool, h("div", { style: "height:10px" }), check, out);
+      }, done);
+    },
+
+    gap(act, board, done) {
+      sequence(board, act.items, (it, box, mark, next) => {
+        const out = h("div");
+        const btns = it.options.map(o => h("button", { class: "choice" }, o));
+        btns.forEach(b => b.onclick = () => {
+          btns.forEach(x => x.disabled = true);
+          const right = norm(b.textContent) === norm(it.answer);
+          b.classList.add(right ? "ok" : "ko");
+          const full = it.text.replace("___", it.answer);
+          out.append(fb(right, full)); say(full);
+          mark(right, { eu: it.answer, es: it.es }); setTimeout(next, right ? 1400 : 2600);
+        });
+        box.append(h("div", { class: "prompt" }, it.text.replace("___", "____")), h("p", { class: "muted" }, it.es), h("div", { class: "choices" }, ...btns), out);
+      }, done);
+    },
+
+    transform(act, board, done) {
+      sequence(board, act.items, (it, box, mark, next) => {
+        const inp = h("input", { placeholder: "Escribe la frase…" });
+        const out = h("div");
+        const btn = h("button", {}, "Egiaztatu");
+        const go = () => {
+          const right = norm(inp.value) === norm(it.to);
+          btn.disabled = true; inp.disabled = true; out.append(fb(right, it.to)); say(it.to);
+          mark(right, { eu: it.to, es: it.instr }); setTimeout(next, right ? 1400 : 3000);
+        };
+        btn.onclick = go; inp.addEventListener("keydown", e => e.key === "Enter" && !btn.disabled && go());
+        box.append(h("p", {}, h("b", {}, it.instr)), h("div", { class: "prompt" }, it.from, " ", playBtn(it.from)), inp, h("div", { style: "height:8px" }), btn, out);
+        setTimeout(() => inp.focus(), 100);
+      }, done);
+    },
+
+    dictation(act, board, done) {
+      sequence(board, act.items, (it, box, mark, next) => {
+        const inp = h("input", { placeholder: "Lo que oyes…", autocapitalize: "off", autocomplete: "off", spellcheck: "false" });
+        const out = h("div"); const btn = h("button", {}, "Egiaztatu");
+        const go = () => {
+          const right = norm(inp.value) === norm(it.eu);
+          btn.disabled = true; inp.disabled = true; out.append(fb(right, `${it.eu} — ${it.es}`));
+          mark(right, { eu: it.eu, es: it.es }); setTimeout(next, right ? 1500 : 3000);
+        };
+        btn.onclick = go; inp.addEventListener("keydown", e => e.key === "Enter" && !btn.disabled && go());
+        box.append(h("div", { class: "center", style: "margin:12px 0" }, h("button", { class: "play big", onclick: () => say(it.eu) }, "🔊 Entzun")), inp, h("div", { style: "height:8px" }), btn, out);
+        setTimeout(() => { say(it.eu); inp.focus(); }, 500);
+      }, done);
+    },
+
+    culture(act, board, done) {
+      board.append(h("h2", {}, act.title), h("p", {}, rich(act.body)), act.eu_word ? h("p", {}, playBtn(act.eu_word), " ", h("b", {}, act.eu_word)) : null);
+      done({ ok: 1, total: 1 });
+    },
+
+    write(act, board, done) {
+      const ta = h("textarea", { placeholder: "Idatzi hemen…" });
+      const out = h("div"); const btn = h("button", {}, "Zuzendu");
+      btn.onclick = async () => {
+        btn.disabled = true; out.replaceChildren(h("p", { class: "muted" }, "Irati está leyendo…"));
+        try { const c = await api("/api/write", { body: { lessonId: S.cls.lesson.id, prompt: act.prompt, text: ta.value } }); out.replaceChildren(correctionView(c)); done({ ok: (c.errors || []).length ? 0 : 1, total: 1 }); }
+        catch (e) { out.replaceChildren(h("p", {}, e.message)); btn.disabled = false; }
+      };
+      board.append(h("p", {}, h("b", {}, rich(act.prompt))), ta, h("div", { style: "height:8px" }), btn, out);
+    },
+
+    repeat(act, board, done) {
+      const canRec = !!(navigator.mediaDevices && window.MediaRecorder);
+      let played = 0;
+      board.append(...act.items.map(w => {
+        const mine = h("audio", { controls: true, class: "hidden", style: "height:32px" });
+        const rec = canRec ? h("button", { class: "soft" }, "🎙 Grabar") : null;
+        if (rec) rec.onclick = async () => {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const mr = new MediaRecorder(stream); const chunks = [];
+            mr.ondataavailable = e => chunks.push(e.data);
+            mr.onstop = () => { stream.getTracks().forEach(t => t.stop()); mine.src = URL.createObjectURL(new Blob(chunks)); mine.classList.remove("hidden"); rec.textContent = "🎙 Otra vez"; };
+            rec.textContent = "⏺ 3 s…"; mr.start(); setTimeout(() => mr.stop(), 3000);
+          } catch (e) { rec.textContent = "Sin micro"; }
+        };
+        return h("div", { class: "row", style: "margin:10px 0" }, h("button", { class: "play", onclick: () => { say(w); if (++played >= Math.ceil(act.items.length / 2)) done({ ok: 1, total: 1 }); } }, "🔊"), h("b", { class: "grow" }, w), rec, mine);
+      }));
+    },
+
+    speed(act, board, done) {
+      let left = act.seconds, ok = 0, total = 0; const misses = [];
+      const top = h("div", { class: "speed-top" }, h("span", {}, "✅ 0"), h("span", {}, `${left} s`));
+      const bar = h("div", { class: "bar" }, h("i", { style: "width:100%" }));
+      const box = h("div");
+      const startBtn = h("button", { class: "big" }, "▶ Hasi");
+      board.append(h("div", { class: "center" }, startBtn), top, bar, box);
+      const round = () => {
+        const p = act.pairs[Math.floor(Math.random() * act.pairs.length)];
+        const opts = shuffle([p[1], ...shuffle(act.pairs.filter(x => x[1] !== p[1]).map(x => x[1])).slice(0, 2)]);
+        box.replaceChildren(h("div", { class: "prompt center" }, `${p[0]}`), h("div", { class: "choices" }, ...opts.map(o => h("button", { class: "choice", onclick: () => {
+          total++; if (o === p[1]) ok++; else misses.push({ eu: p[0], es: p[1] });
+          top.firstChild.textContent = `✅ ${ok}`; if (left > 0) round();
+        } }, o))));
+      };
+      startBtn.onclick = () => {
+        startBtn.remove(); round();
+        const t = setInterval(() => {
+          left--; top.lastChild.textContent = `${left} s`; bar.firstChild.style.width = (left / act.seconds * 100) + "%";
+          if (left <= 0 || !document.body.contains(board)) {
+            clearInterval(t);
+            box.replaceChildren(h("div", { class: "center" }, h("div", { class: "prompt" }, `${ok} ✅`), h("p", { class: "muted" }, `de ${total} intentos`)));
+            done({ ok, total, misses: misses.slice(0, 10) });
+          }
+        }, 1000);
+      };
+    },
+
+    summary(act, board, done) {
+      board.append(act.pattern ? h("div", { class: "slide" }, h("div", { class: "pattern" }, act.pattern)) : null,
+        act.tip ? h("p", { class: "center muted" }, act.tip) : null,
+        h("div", { class: "cards", style: "margin-top:10px" }, ...act.words.map(([eu, es, em]) => h("div", { class: "card", style: "margin:0;cursor:pointer;text-align:center", onclick: () => say(eu) }, h("div", { style: "font-size:1.4rem" }, em || ""), h("b", {}, eu), h("div", { class: "small muted" }, es)))));
+      done({ ok: 1, total: 1 });
+    },
+
+    homework(act, board, done) {
+      board.append(h("h3", {}, "Etxeko lanak"), h("p", { class: "pre" }, act.brief));
+      done({ ok: 1, total: 1 });
+    },
+  };
+
+  boot();
+})();

@@ -1,0 +1,17 @@
+{
+  "name": "irakaslea",
+  "version": "0.1.0",
+  "description": "Clase de euskera de una hora con una profesora IA (prototipo personal)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "sync-lessons": "node scripts/sync-lessons.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.2",
+    "msedge-tts": "^2.1.0"
+  }
+}
