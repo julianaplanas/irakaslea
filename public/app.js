@@ -25,6 +25,9 @@
   }
   const norm = s => String(s || "").toLowerCase().normalize("NFC").replace(/[¿¡?!.,;:«»"'()…\-–—]/g, " ").replace(/\s+/g, " ").trim();
   const shuffle = a => { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+  const lev = (a, b) => { const m = a.length, n = b.length, d = Array.from({ length: m + 1 }, (_, i) => [i]); for (let j = 1; j <= n; j++) d[0][j] = j; for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1)); return d[m][n]; };
+  // Compara lo escrito con la respuesta: "ok", "casi" (1-2 letras de diferencia) o "mal".
+  const grade = (got, want) => { const a = norm(got), b = norm(want); if (a === b) return "ok"; return a && lev(a, b) <= Math.max(1, Math.floor(b.length / 12)) ? "casi" : "mal"; };
   const avatar = (cls = "avatar") => h("div", { class: cls, html: window.IRATI_SVG });
   const stripEmoji = s => s.replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{200D}]/gu, "").trim();
 
@@ -120,19 +123,43 @@
     if (!list.length) return body.append(h("div", { class: "card muted" }, "Aún no hay deberes. Aparecen al terminar cada clase."));
     for (const hw of list) {
       const card = h("div", { class: "card" }, h("div", { class: "row" }, h("b", { class: "grow" }, `${hw.lesson ? hw.lesson.emoji + " " + hw.lesson.eu : hw.lesson_id}`),
-        hw.corrected_at ? h("span", { class: "badge" }, "zuzenduta") : hw.submitted_at ? h("span", { class: "badge gold" }, "bidalita") : h("span", { class: "badge red" }, "egiteko")),
-        h("p", { class: "pre" }, hw.brief));
-      if (hw.correction) card.append(correctionView(hw.correction));
+        hw.corrected_at ? h("span", { class: "badge" }, "zuzenduta") : hw.submitted_at ? h("span", { class: "badge gold" }, "bidalita") : h("span", { class: "badge red" }, "egiteko")));
+      const locked = !!hw.correction;
+      const fields = [];
+      hw.parts.forEach((p, i) => {
+        const part = h("div", { class: "hwpart" }, h("b", {}, `${i + 1}. ${p.kind === "record" ? "🎙 " : p.kind === "translate" ? "🔁 " : "✍️ "}`), rich(p.instr));
+        if (p.kind === "record") {
+          if (p.text) part.append(h("p", { class: "eu-text" }, playBtn(p.text), " ", p.text));
+          if (hw.audio.includes(i)) part.append(h("audio", { controls: true, src: `/api/homework/${hw.lesson_id}/audio/${i}?t=${Date.now()}`, style: "height:36px;max-width:100%" }));
+          if (!locked) {
+            const st = h("span", { class: "muted small" });
+            part.append(recorder(async blob => { st.textContent = "Guardando…"; try { const r = await fetch(`/api/homework/${hw.lesson_id}/audio/${i}`, { method: "POST", body: blob }); st.textContent = r.ok ? "Grabación guardada ✓" : "No se pudo guardar"; } catch (e) { st.textContent = "No se pudo guardar"; } }, 180), st);
+          }
+          fields[i] = null;
+        } else {
+          const items = p.items || [];
+          if (items.length) {
+            const inputs = items.map((x, k) => h("input", { placeholder: "Euskaraz…", value: ((hw.answers || [])[i] || "").split("\n")[k] || "", disabled: locked }));
+            part.append(...items.map((x, k) => h("div", { class: "hwitem" }, h("div", { class: "small" }, `${k + 1}. ${x}`), inputs[k])));
+            fields[i] = () => inputs.map(x => x.value.trim()).join("\n");
+          } else {
+            const ta = h("textarea", { placeholder: "Idatzi hemen…", disabled: locked }, (hw.answers || [])[i] || (i === 0 && !hw.answers ? hw.answer || "" : ""));
+            part.append(ta);
+            fields[i] = () => ta.value;
+          }
+        }
+        card.append(part);
+      });
+      if (hw.correction) card.append(h("h3", { style: "margin-top:14px" }, "Zuzenketa"), correctionView(hw.correction));
       else {
-        const ta = h("textarea", { placeholder: "Escribe aquí tus respuestas…" }, hw.answer || "");
         const msg = h("p", { class: "muted small" });
         const btn = h("button", {}, "Bidali");
         btn.onclick = async () => {
           btn.disabled = true; msg.textContent = "Irati lo está corrigiendo…";
-          try { const r = await api(`/api/homework/${hw.lesson_id}`, { body: { answer: ta.value } }); if (r.correction) { card.replaceChildren(h("b", {}, "Zuzenketa"), correctionView(r.correction)); } else msg.textContent = "Entregado. Se corregirá cuando haya conexión con Claude."; }
+          try { const r = await api(`/api/homework/${hw.lesson_id}`, { body: { answers: fields.map(f => f ? f() : "") } }); if (r.correction) renderHome(); else { msg.textContent = "Entregado. Se corregirá más tarde."; btn.disabled = false; } }
           catch (e) { msg.textContent = e.message; btn.disabled = false; }
         };
-        card.append(ta, h("div", { style: "height:8px" }), btn, msg);
+        card.append(h("div", { style: "height:8px" }), btn, msg);
       }
       body.append(card);
     }
@@ -153,7 +180,7 @@
       h("button", { class: "ghost", onclick: async () => { await api(`/api/videos/${v.id}`, { method: "DELETE" }); renderHome(); } }, "Kendu")));
   }
 
-  const TYPE_ES = { roleplay: "Conversación", feedback: "Corrección de deberes", memory: "Parejas", scene: "Escena", slides: "Explicación", cards: "Tarjetas", video: "Vídeo", mcq: "Test", match: "Unir", order: "Ordenar", gap: "Huecos", transform: "Transformar", dictation: "Dictado", culture: "Cultura", write: "Escritura", repeat: "Pronunciación", speed: "Ronda rápida", summary: "Resumen", homework: "Deberes" };
+  const TYPE_ES = { roleplay: "Conversación", feedback: "Corrección de deberes", memory: "Parejas", scene: "Escena", slides: "Explicación", cards: "Tarjetas", video: "Vídeo", mcq: "Test", match: "Unir", order: "Ordenar", gap: "Huecos", transform: "Transformar", dictation: "Dictado", culture: "Cultura", write: "Escritura", repeat: "Pronunciación", speed: "Ronda rápida", summary: "Resumen", homework: "Deberes", translate: "Traducir", listening: "Escucha", reading: "Lectura" };
   const mmss = s => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
   function reportMarkdown(rep) {
     return rep.map(c => [
@@ -346,6 +373,26 @@
     return b;
   }
 
+  // Grabadora: botón para grabar/parar y reproductor. onBlob recibe el audio.
+  function recorder(onBlob, maxSec = 120) {
+    const canRec = !!(navigator.mediaDevices && window.MediaRecorder);
+    const player = h("audio", { controls: true, class: "hidden", style: "height:36px;max-width:100%" });
+    if (!canRec) return h("p", { class: "muted small" }, "Este navegador no puede grabar.");
+    const btn = h("button", { class: "soft" }, "🎙 Grabar");
+    let mr = null, stream = null, timer = null;
+    btn.onclick = async () => {
+      if (mr && mr.state === "recording") { mr.stop(); return; }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mr = new MediaRecorder(stream); const chunks = [];
+        mr.ondataavailable = e => chunks.push(e.data);
+        mr.onstop = () => { clearTimeout(timer); stream.getTracks().forEach(t => t.stop()); const blob = new Blob(chunks, { type: mr.mimeType || "audio/webm" }); player.src = URL.createObjectURL(blob); player.classList.remove("hidden"); btn.textContent = "🎙 Grabar otra vez"; onBlob && onBlob(blob); };
+        stopVoice(); mr.start(); btn.textContent = "⏹ Parar"; timer = setTimeout(() => mr.state === "recording" && mr.stop(), maxSec * 1000);
+      } catch (e) { btn.textContent = "Sin acceso al micro"; }
+    };
+    return h("div", { class: "row" }, btn, player);
+  }
+
   const RENDER = {
     roleplay(act, board, done) {
       const msgs = [];
@@ -353,7 +400,10 @@
       const input = h("input", { placeholder: "Idatzi euskaraz…" });
       const send = h("button", {}, "➤");
       let userTurns = 0;
-      board.append(h("p", { class: "small muted" }, "🎭 ", act.situation), h("p", { class: "small" }, "🎯 ", act.goal), chat, h("div", { class: "chat-input" }, input, micButton(input), send));
+      const turnInfo = h("div", { class: "turns" });
+      const drawTurns = () => turnInfo.replaceChildren(...Array.from({ length: act.turns }, (_, i) => h("i", { class: i < userTurns ? "on" : "" })), h("span", { class: "small muted" }, userTurns >= act.turns ? " Conversación terminada ✓ Pulsa «Jarraitu»." : ` Turno ${userTurns + 1} de ${act.turns}`));
+      drawTurns();
+      board.append(h("p", { class: "small muted" }, "🎭 ", act.situation), h("p", { class: "small" }, "🎯 ", act.goal), turnInfo, chat, h("div", { class: "chat-input" }, input, micButton(input), send));
       const add = (role, text) => { chat.append(chatMsg(role, text)); chat.scrollTop = chat.scrollHeight; };
       if (act.starter) { msgs.push({ role: "assistant", content: act.starter }); add("t", act.starter); setTimeout(() => S.voice && say(act.starter.replace(/\([^)]*\)/g, ""), "eu"), 2600); }
       const go = async () => {
@@ -367,7 +417,7 @@
           typing.remove(); msgs.push({ role: "assistant", content: r.text }); add("t", r.text);
           if (S.voice) say(r.text.split("\n").filter(l => !/^\s*(✏️|⭐)/.test(l)).join(" ").replace(/\([^)]*\)/g, ""), "eu");
         } catch (e) { typing.textContent = e.message; msgs.pop(); input.value = text; userTurns--; }
-        send.disabled = false; input.focus();
+        send.disabled = false; input.focus(); drawTurns();
         if (userTurns >= Math.min(2, act.turns)) done(userTurns >= act.turns ? { ok: 1, total: 1 } : null);
         if (userTurns >= act.turns) { input.disabled = true; send.disabled = true; }
       };
@@ -496,7 +546,7 @@
         const b = Rb[right.indexOf(x)];
         if (sel.i === x.i) { sel.el.classList.add("gone"); b.classList.add("gone"); sel = null; found++; if (found === act.pairs.length) done({ ok: act.pairs.length - errors, total: act.pairs.length, misses }); }
         else { errors++; misses.push({ eu: act.pairs[sel.i][0], es: act.pairs[sel.i][1] }); b.classList.add("sel"); setTimeout(() => b.classList.remove("sel"), 400); }
-      } }, h("span", { class: "em" }, x.em || ""), h("div", { class: "small" }, x.t)));
+      } }, h("span", { class: "em" + (act.emojiOnly ? " big" : "") }, x.em || ""), act.emojiOnly && x.em ? null : h("div", { class: "small" }, x.t)));
       for (let k = 0; k < left.length; k++) grid.append(L[k], Rb[k]);
       board.append(grid);
     },
@@ -508,7 +558,7 @@
         const picked = [];
         const out = h("div");
         const check = h("button", { disabled: true }, "Egiaztatu");
-        shuffle(words.map((w, k) => ({ w, k }))).forEach(t => {
+        (it.tiles || shuffle(words.map((w, k) => ({ w, k })))).forEach(t => {
           const b = h("button", { class: "tile" }, t.w);
           b.onclick = () => {
             if (b.classList.contains("used")) return;
@@ -531,16 +581,84 @@
     gap(act, board, done) {
       sequence(board, act.items, (it, box, mark, next) => {
         const out = h("div");
+        const inp = h("input", { placeholder: "La palabra que falta…", autocapitalize: "off", autocomplete: "off", spellcheck: "false" });
+        const hint = h("button", { class: "soft" }, "💡 Pista");
+        const hints = h("div", { class: "row small muted", style: "margin-top:6px" });
+        hint.onclick = () => { hint.disabled = true; hints.replaceChildren("Una de estas: ", ...it.options.map(o => h("b", { style: "margin-right:8px" }, o))); };
+        const btn = h("button", {}, "Egiaztatu");
+        const go = () => {
+          const g = grade(inp.value, it.answer); const full = it.text.replace("___", it.answer);
+          btn.disabled = true; inp.disabled = true;
+          out.append(g === "casi" ? h("div", { class: "feedback ok" }, "🟡 Casi: ", full) : fb(g === "ok", full)); say(full);
+          mark(g !== "mal", { eu: it.answer, es: it.es }); setTimeout(next, g === "ok" ? 1400 : 2800);
+        };
+        btn.onclick = go; inp.addEventListener("keydown", e => e.key === "Enter" && !btn.disabled && go());
+        box.append(h("div", { class: "prompt" }, it.text.replace("___", "____")), h("p", { class: "muted" }, it.es), inp, hints, h("div", { class: "row", style: "margin-top:8px" }, btn, hint), out);
+        setTimeout(() => inp.focus(), 100);
+      }, done);
+    },
+
+    translate(act, board, done) {
+      sequence(board, act.items, (it, box, mark, next) => {
+        const inp = h("textarea", { placeholder: "Euskaraz…", style: "min-height:70px", autocapitalize: "sentences", spellcheck: "false" });
+        const out = h("div"); const btn = h("button", {}, "Egiaztatu");
+        const go = () => {
+          const g = grade(inp.value, it.eu);
+          btn.disabled = true; inp.disabled = true;
+          out.append(g === "casi" ? h("div", { class: "feedback ok" }, "🟡 Casi. Así: ", it.eu) : fb(g === "ok", it.eu), " ", playBtn(it.eu));
+          mark(g !== "mal", { eu: it.eu, es: it.es }); 
+          const cont = h("button", { style: "margin-top:10px" }, "Hurrengoa →"); cont.onclick = next; out.append(h("div", {}, cont));
+        };
+        btn.onclick = go; inp.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (!btn.disabled) go(); } });
+        box.append(h("div", { class: "prompt", style: "font-size:1.25rem" }, it.es), inp, h("div", { style: "height:8px" }), btn, out);
+        setTimeout(() => inp.focus(), 100);
+      }, done);
+    },
+
+    listening(act, board, done) {
+      const script = h("div", { class: "hidden" }, ...act.lines.map(([who, eu, es]) => h("div", { class: "line " + (who === "B" ? "B" : "A") }, h("div", { class: "who" }, who), h("div", { class: "say", onclick: () => say(eu) }, eu, h("span", { class: "tr" }, es)))));
+      const playAll = () => speak(act.lines.map(l => ({ text: l[1], lang: "eu" })));
+      const qs = h("div");
+      board.append(act.context ? h("p", { class: "muted" }, "🎧 ", act.context) : null,
+        h("div", { class: "center", style: "margin:10px 0" }, h("button", { class: "play big", onclick: playAll }, "▶ Entzun elkarrizketa")), qs);
+      const items = (act.questions || []).map(q => ({ q: q.q, answer: q.answer, options: shuffle(q.options) }));
+      sequence(qs, items, (it, box, mark, next) => {
+        const out = h("div");
         const btns = it.options.map(o => h("button", { class: "choice" }, o));
         btns.forEach(b => b.onclick = () => {
           btns.forEach(x => x.disabled = true);
-          const right = norm(b.textContent) === norm(it.answer);
-          b.classList.add(right ? "ok" : "ko");
-          const full = it.text.replace("___", it.answer);
-          out.append(fb(right, full)); say(full);
-          mark(right, { eu: it.answer, es: it.es }); setTimeout(next, right ? 1400 : 2600);
+          const right = b.textContent === it.answer;
+          b.classList.add(right ? "ok" : "ko"); (btns.find(x => x.textContent === it.answer) || b).classList.add("ok");
+          mark(right); setTimeout(next, right ? 900 : 1800);
         });
-        box.append(h("div", { class: "prompt" }, it.text.replace("___", "____")), h("p", { class: "muted" }, it.es), h("div", { class: "choices" }, ...btns), out);
+        box.append(h("p", {}, h("b", {}, it.q)), h("div", { class: "choices" }, ...btns), out);
+      }, res => {
+        qs.append(h("p", { class: "muted small" }, "Ahora lee la conversación y vuelve a escucharla frase a frase:"), script);
+        script.classList.remove("hidden");
+        done(res);
+      });
+    },
+
+    reading(act, board, done) {
+      const gloss = new Map((act.glossary || []).map(([w, t]) => [norm(w), t]));
+      const textEl = h("p", { class: "reading" });
+      String(act.text).split(/(\s+)/).forEach(tok => {
+        const k = norm(tok);
+        if (gloss.has(k)) { const sp = h("span", { class: "gl", title: gloss.get(k) }, tok); sp.onclick = () => { sp.classList.toggle("on"); sp.dataset.t = gloss.get(k); }; textEl.append(sp); }
+        else textEl.append(tok);
+      });
+      const qs = h("div", { style: "margin-top:14px" });
+      board.append(h("h3", {}, act.title || ""), textEl, h("div", { class: "row" }, h("button", { class: "play", onclick: () => say(act.text) }, "🔊 Entzun testua")), qs);
+      const items = (act.questions || []).map(q => ({ q: q.q, answer: q.answer, options: shuffle(q.options) }));
+      sequence(qs, items, (it, box, mark, next) => {
+        const btns = it.options.map(o => h("button", { class: "choice" }, o));
+        btns.forEach(b => b.onclick = () => {
+          btns.forEach(x => x.disabled = true);
+          const right = b.textContent === it.answer;
+          b.classList.add(right ? "ok" : "ko"); (btns.find(x => x.textContent === it.answer) || b).classList.add("ok");
+          mark(right); setTimeout(next, right ? 900 : 1800);
+        });
+        box.append(h("p", {}, h("b", {}, it.q)), h("div", { class: "choices" }, ...btns));
       }, done);
     },
 
@@ -583,12 +701,17 @@
     write(act, board, done) {
       const ta = h("textarea", { placeholder: "Idatzi hemen…" });
       const out = h("div"); const btn = h("button", {}, "Zuzendu");
+      const insert = w => { const p = ta.selectionStart ?? ta.value.length; const pre = ta.value.slice(0, p); ta.value = pre + (pre && !/\s$/.test(pre) ? " " : "") + w + " " + ta.value.slice(p); ta.focus(); };
       btn.onclick = async () => {
         btn.disabled = true; out.replaceChildren(h("p", { class: "muted" }, "Irati está leyendo…"));
-        try { const c = await api("/api/write", { body: { lessonId: S.cls.lesson.id, prompt: act.prompt, text: ta.value } }); out.replaceChildren(correctionView(c)); done({ ok: (c.errors || []).length ? 0 : 1, total: 1 }); }
+        try { const c = await api("/api/write", { body: { lessonId: S.cls.lesson.id, prompt: act.prompt, text: ta.value } }); out.replaceChildren(correctionView(c)); btn.disabled = false; btn.textContent = "Zuzendu berriro"; done({ ok: (c.errors || []).length ? 0 : 1, total: 1 }); }
         catch (e) { out.replaceChildren(h("p", {}, e.message)); btn.disabled = false; }
       };
-      board.append(h("p", {}, h("b", {}, rich(act.prompt))), ta, h("div", { style: "height:8px" }), btn, out);
+      board.append(h("p", {}, h("b", {}, rich(act.prompt))),
+        act.model ? h("div", { class: "model" }, h("div", { class: "small muted" }, "Modelo:"), ...String(act.model).split("\n").filter(Boolean).map(l => h("div", {}, playBtn(l, "🔊"), " ", l)),
+          h("button", { class: "soft small", style: "margin-top:6px", onclick: () => { ta.value = String(act.model); ta.focus(); } }, "Copiar el modelo y adaptarlo")) : null,
+        act.bank ? h("div", { class: "bank" }, ...act.bank.map(w => h("button", { class: "chip", onclick: () => insert(w) }, w))) : null,
+        ta, h("div", { style: "height:8px" }), btn, out);
     },
 
     repeat(act, board, done) {
@@ -631,7 +754,9 @@
           left--; top.lastChild.textContent = `${left} s`; bar.firstChild.style.width = (left / act.seconds * 100) + "%";
           if (left <= 0 || !document.body.contains(board)) {
             clearInterval(t);
-            box.replaceChildren(h("div", { class: "center" }, h("div", { class: "prompt" }, `${ok} ✅`), h("p", { class: "muted" }, `de ${total} intentos`)));
+            const uniq = [...new Map(misses.map(m => [m.eu, m])).values()];
+            box.replaceChildren(h("div", { class: "center" }, h("div", { class: "prompt" }, `${ok} ✅`), h("p", { class: "muted" }, `de ${total} intentos`)),
+              uniq.length ? h("div", {}, h("b", {}, "Las que fallaste:"), ...uniq.map(m => h("div", { class: "feedback ko" }, playBtn(m.eu), " ", h("b", {}, m.eu), " = ", m.es))) : h("p", { class: "center" }, "¡Ninguna fallada! 👏"));
             done({ ok, total, misses: misses.slice(0, 10) });
           }
         }, 1000);
@@ -646,7 +771,8 @@
     },
 
     homework(act, board, done) {
-      board.append(h("h3", {}, "Etxeko lanak"), h("p", { class: "pre" }, act.brief));
+      board.append(h("h3", {}, "Etxeko lanak"), ...act.parts.map((p, i) => h("div", { class: "hwpart" }, h("b", {}, `${i + 1}. ${p.kind === "record" ? "🎙 " : p.kind === "translate" ? "🔁 " : "✍️ "}`), rich(p.instr),
+        p.items ? h("ul", {}, ...p.items.map(x => h("li", {}, x))) : null, p.text ? h("p", { class: "eu-text" }, p.text) : null)));
       done({ ok: 1, total: 1 });
     },
   };

@@ -9,7 +9,7 @@ const fs = require("fs");
 const C = require("./lib/content");
 const claude = require("./lib/claude");
 const tts = require("./lib/tts");
-const { buildClass, generateExtras } = require("./lib/classBuilder");
+const { buildClass, generateExtras, homeworkParts, EXTRAS_VERSION } = require("./lib/classBuilder");
 const videos = require("./lib/videos");
 
 const PORT = process.env.PORT || 3000;
@@ -31,6 +31,9 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS writings (id INTEGER PRIMARY KEY AUTOINCREMENT, lesson_id TEXT, prompt TEXT, text TEXT, correction TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')));
 `);
 db.prepare("INSERT OR IGNORE INTO notes (id, text) VALUES (1, '')").run();
+for (const [col, def] of [["parts", "TEXT"], ["answers", "TEXT"]]) if (!db.prepare("PRAGMA table_info(homework)").all().some(c => c.name === col)) db.exec(`ALTER TABLE homework ADD COLUMN ${col} ${def}`);
+const HW_AUDIO = path.join(path.dirname(DB_PATH), "hw-audio");
+fs.mkdirSync(HW_AUDIO, { recursive: true });
 
 const app = express();
 app.use(express.json({ limit: "200kb" }));
@@ -61,7 +64,7 @@ const videosFor = id => {
 
 async function getExtras(lesson) {
   const row = db.prepare("SELECT json FROM extras WHERE lesson_id = ?").get(lesson.id);
-  if (row) return JSON.parse(row.json);
+  if (row) { const ex = JSON.parse(row.json); if ((ex.version || 1) >= EXTRAS_VERSION) return ex; }
   const ex = await generateExtras(lesson);
   if (!ex._fallback) db.prepare("INSERT OR REPLACE INTO extras (lesson_id, json) VALUES (?, ?)").run(lesson.id, JSON.stringify(ex));
   return ex;
@@ -106,7 +109,11 @@ app.get("/api/class/:id", async (req, res) => {
   if (homework) homework.correction = JSON.parse(homework.correction);
   const cls = buildClass(lesson, extras, { weak: weakWords(), homework, videos: videosFor(lesson.id) });
   db.prepare("INSERT INTO classes (lesson_id, started_at) VALUES (?, datetime('now')) ON CONFLICT(lesson_id) DO UPDATE SET started_at = COALESCE(started_at, excluded.started_at)").run(lesson.id);
-  db.prepare("INSERT OR IGNORE INTO homework (lesson_id, brief) VALUES (?, ?)").run(lesson.id, extras.homework.brief);
+  const parts = homeworkParts(extras.homework, lesson);
+  const brief = parts.map((p, i) => `${i + 1}) ${p.instr}`).join("\n");
+  db.prepare("INSERT OR IGNORE INTO homework (lesson_id, brief, parts) VALUES (?, ?, ?)").run(lesson.id, brief, JSON.stringify(parts));
+  // Deberes aún sin entregar: se actualizan al formato nuevo.
+  db.prepare("UPDATE homework SET brief = ?, parts = ? WHERE lesson_id = ? AND submitted_at IS NULL").run(brief, JSON.stringify(parts), lesson.id);
   res.json(cls);
 });
 
@@ -220,19 +227,42 @@ app.post("/api/write", async (req, res) => {
 });
 
 // ---------- deberes ----------
+const hwView = h => {
+  const l = C.byId[h.lesson_id];
+  return { ...h, parts: h.parts ? JSON.parse(h.parts) : homeworkParts({ brief: h.brief }, l), answers: h.answers ? JSON.parse(h.answers) : null,
+    correction: h.correction ? JSON.parse(h.correction) : null, lesson: l ? { eu: l.eu, title: l.title, emoji: l.emoji } : null,
+    audio: fs.readdirSync(HW_AUDIO).filter(f => f.startsWith(h.lesson_id + "-")).map(f => +f.split("-")[1].split(".")[0]) };
+};
 app.get("/api/homework", (req, res) => {
-  res.json(db.prepare("SELECT h.* FROM homework h JOIN classes c ON c.lesson_id = h.lesson_id WHERE c.finished_at IS NOT NULL ORDER BY c.finished_at DESC").all().map(h => ({ ...h, correction: h.correction ? JSON.parse(h.correction) : null, lesson: C.byId[h.lesson_id] ? { eu: C.byId[h.lesson_id].eu, title: C.byId[h.lesson_id].title, emoji: C.byId[h.lesson_id].emoji } : null })));
+  res.json(db.prepare("SELECT h.* FROM homework h JOIN classes c ON c.lesson_id = h.lesson_id WHERE c.finished_at IS NOT NULL ORDER BY c.finished_at DESC").all().map(hwView));
+});
+const finishedClass = id => db.prepare("SELECT 1 FROM classes WHERE lesson_id = ? AND finished_at IS NOT NULL").get(id);
+const safeId = id => /^[\w-]+$/.test(id);
+// Grabación de una parte de los deberes.
+app.post("/api/homework/:id/audio/:part", express.raw({ type: () => true, limit: "8mb" }), (req, res) => {
+  if (!safeId(req.params.id) || !finishedClass(req.params.id) || !req.body || !req.body.length) return res.status(400).json({ error: "No se pudo guardar el audio" });
+  fs.writeFileSync(path.join(HW_AUDIO, `${req.params.id}-${req.params.part | 0}.webm`), req.body);
+  res.json({ ok: true });
+});
+app.get("/api/homework/:id/audio/:part", (req, res) => {
+  const f = path.join(HW_AUDIO, `${req.params.id}-${req.params.part | 0}.webm`);
+  if (!safeId(req.params.id) || !fs.existsSync(f)) return res.status(404).end();
+  res.sendFile(f);
 });
 app.post("/api/homework/:id", async (req, res) => {
   const h = db.prepare("SELECT * FROM homework WHERE lesson_id = ?").get(req.params.id);
-  const finished = db.prepare("SELECT 1 FROM classes WHERE lesson_id = ? AND finished_at IS NOT NULL").get(req.params.id);
-  if (!h || !finished) return res.status(404).json({ error: "No hay deberes para esa clase" });
-  const answer = String((req.body || {}).answer || "").slice(0, 6000);
-  if (!answer.trim()) return res.status(400).json({ error: "Escribe tu respuesta" });
-  db.prepare("UPDATE homework SET answer = ?, submitted_at = datetime('now') WHERE lesson_id = ?").run(answer, req.params.id);
+  if (!h || !finishedClass(req.params.id)) return res.status(404).json({ error: "No hay deberes para esa clase" });
+  const v = hwView(h);
+  const answers = (Array.isArray((req.body || {}).answers) ? req.body.answers : []).map(a => String(a || "").slice(0, 3000));
+  if (!v.parts.some((p, i) => p.kind !== "record" && (answers[i] || "").trim())) return res.status(400).json({ error: "Escribe al menos una respuesta" });
+  db.prepare("UPDATE homework SET answers = ?, answer = ?, submitted_at = datetime('now') WHERE lesson_id = ?").run(JSON.stringify(answers), answers.join("\n\n"), req.params.id);
   if (!claude.enabled()) return res.json({ ok: true, pending: true });
+  const lesson = C.byId[req.params.id];
+  const text = v.parts.map((p, i) => p.kind === "record"
+    ? `Parte ${i + 1} (lectura en voz alta): ${v.audio.includes(i) ? "grabada" : "no grabada"} — no la corrijas.`
+    : `Parte ${i + 1}: ${p.instr}${p.items ? "\nFrases: " + p.items.join(" / ") : ""}\nRespuesta de la alumna:\n${answers[i] || "(vacía)"}`).join("\n\n");
   try {
-    const c = await correct(C.byId[req.params.id], h.brief, answer);
+    const c = await correct(lesson, "Deberes con varias partes. En cada error indica la parte (por ejemplo «Parte 1»).", text);
     db.prepare("UPDATE homework SET correction = ?, corrected_at = datetime('now') WHERE lesson_id = ?").run(JSON.stringify(c), req.params.id);
     res.json({ ok: true, correction: c });
   } catch (e) { console.error("Homework:", e.message); res.json({ ok: true, pending: true }); }
