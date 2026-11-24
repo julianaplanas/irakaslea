@@ -63,7 +63,7 @@ async function getExtras(lesson) {
   const row = db.prepare("SELECT json FROM extras WHERE lesson_id = ?").get(lesson.id);
   if (row) return JSON.parse(row.json);
   const ex = await generateExtras(lesson);
-  if (claude.enabled() && ex.culture) db.prepare("INSERT OR REPLACE INTO extras (lesson_id, json) VALUES (?, ?)").run(lesson.id, JSON.stringify(ex));
+  if (!ex._fallback) db.prepare("INSERT OR REPLACE INTO extras (lesson_id, json) VALUES (?, ?)").run(lesson.id, JSON.stringify(ex));
   return ex;
 }
 
