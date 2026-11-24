@@ -193,7 +193,9 @@ Reglas del role-play:
   const msgs = messages.slice(-16).map(m => ({ role: m.role === "assistant" ? "assistant" : "user", content: String(m.content).slice(0, 1000) }));
   if (!msgs.length || msgs[0].role !== "user") msgs.unshift({ role: "user", content: "(Empieza la actividad.)" });
   try {
-    res.json({ text: await claude.ask({ system, messages: msgs, maxTokens: 400 }) });
+    const text = await claude.ask({ system, messages: msgs, maxTokens: 400 });
+    if (!text) throw new Error("respuesta vacía");
+    res.json({ text });
   } catch (e) { console.error("Chat:", e.message); res.status(502).json({ error: "Irati no responde ahora. Prueba otra vez." }); }
 });
 

@@ -364,9 +364,10 @@
         const typing = h("div", { class: "msg t muted" }, "…"); chat.append(typing);
         try {
           const r = await api("/api/chat", { body: { lessonId: S.cls.lesson.id, situation: act.situation, goal: act.goal, messages: msgs, turnsLeft: Math.max(0, act.turns - userTurns) } });
+          if (!r.text) throw new Error("Irati no ha contestado. Prueba a enviarlo otra vez.");
           typing.remove(); msgs.push({ role: "assistant", content: r.text }); add("t", r.text);
           if (S.voice) say(r.text.split("\n").filter(l => !/^\s*(✏️|⭐)/.test(l)).join(" ").replace(/\([^)]*\)/g, ""), "eu");
-        } catch (e) { typing.textContent = e.message; }
+        } catch (e) { typing.textContent = e.message; msgs.pop(); input.value = text; userTurns--; }
         send.disabled = false; input.focus();
         if (userTurns >= Math.min(2, act.turns)) done(userTurns >= act.turns ? { ok: 1, total: 1 } : null);
         if (userTurns >= act.turns) { input.disabled = true; send.disabled = true; }
