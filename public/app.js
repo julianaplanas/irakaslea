@@ -54,8 +54,9 @@
   function say(text, lang = "eu") { speak([{ text: stripEmoji(text), lang }]); }
   function teacherSays(text) {
     if (!S.voice) return;
-    const segs = String(text).split(/(«[^»]+»)/g).map(p => /^«[^»]+»$/.test(p) ? { text: p.slice(1, -1), lang: "eu" } : { text: stripEmoji(p), lang: "es" });
-    speak(segs);
+    // Solo se lee en voz alta el euskera (lo que va entre «»); el castellano se queda en texto.
+    const segs = (String(text).match(/«[^»]+»/g) || []).map(p => ({ text: p.slice(1, -1), lang: "eu" }));
+    if (segs.length) speak(segs);
   }
   const playBtn = (text, label = "🔊", cls = "play") => h("button", { class: cls, onclick: e => { e.stopPropagation(); say(text, "eu"); } }, label);
 
@@ -277,7 +278,7 @@
       h("p", { class: "muted" }, "Tus deberes están en «Etxeko lanak». Hasta la próxima: «Gero arte!»"),
       classSurvey(S.cls.lesson.id),
       h("button", { onclick: () => { S.tab = "lanak"; renderHome(); } }, "Ver los deberes"), h("div", { style: "height:8px" }), h("button", { class: "ghost", onclick: () => { S.tab = "klaseak"; renderHome(); } }, "Inicio"))));
-    teacherSays("¡Muy bien! Clase terminada. «Gero arte!»");
+    teacherSays("«Bikain!» «Gero arte!»");
   }
 
   function classSurvey(lessonId) {
