@@ -264,7 +264,6 @@
     window.scrollTo(0, 0);
     const R = RENDER[act.type];
     if (R) R(act, board, markDone); else { board.append(h("p", {}, "Actividad desconocida: " + act.type)); markDone(); }
-    setTimeout(() => teacherSays(act.intro), 250);
   }
 
   async function finishClass() {
@@ -278,7 +277,6 @@
       h("p", { class: "muted" }, "Tus deberes están en «Etxeko lanak». Hasta la próxima: «Gero arte!»"),
       classSurvey(S.cls.lesson.id),
       h("button", { onclick: () => { S.tab = "lanak"; renderHome(); } }, "Ver los deberes"), h("div", { style: "height:8px" }), h("button", { class: "ghost", onclick: () => { S.tab = "klaseak"; renderHome(); } }, "Inicio"))));
-    teacherSays("«Bikain!» «Gero arte!»");
   }
 
   function classSurvey(lessonId) {
